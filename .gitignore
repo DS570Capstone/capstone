@@ -1,0 +1,86 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+.Python
+
+# ── Environment ───────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+env/
+
+# ── ML Model Weights & Checkpoints ────────────────────────────────────────────
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+*.task
+ml/ohp_form_pipeline/checkpoints/**
+!ml/ohp_form_pipeline/checkpoints/README.md
+ml/ohp_form_pipeline/models/**
+!ml/ohp_form_pipeline/models/README.md
+
+# ── ML Data & Outputs (large generated files) ─────────────────────────────────
+ml/ohp_form_pipeline/batch_outputs/
+ml/ohp_form_pipeline/batch_outputs.zip
+ml/ohp_form_pipeline/outputs/
+ml/ohp_form_pipeline/data/
+
+# ── NumPy / binary data ────────────────────────────────────────────────────────
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+
+# ── Video & image outputs ──────────────────────────────────────────────────────
+*.mp4
+*.avi
+*.mov
+*.png
+*.jpg
+*.jpeg
+!frontend/src/**/*.png
+!frontend/src/**/*.jpg
+!frontend/src/**/*.jpeg
+!frontend/public/**
+
+# ── Weights & Biases ──────────────────────────────────────────────────────────
+wandb/
+
+# ── Node / Frontend ───────────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# ── PDF / large docs ──────────────────────────────────────────────────────────
+*.pdf
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+postgres_data/
+minio_data/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log

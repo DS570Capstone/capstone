@@ -1,0 +1,16 @@
+# Inherits from root .gitignore — ML-specific additions
+
+# Processed intermediate data
+ohp_form_pipeline/data/
+ohp_form_pipeline/outputs/
+ohp_form_pipeline/batch_outputs/
+ohp_form_pipeline/batch_outputs.zip
+
+# Model weights (covered by root, but explicit here)
+ohp_form_pipeline/checkpoints/**
+!ohp_form_pipeline/checkpoints/README.md
+ohp_form_pipeline/models/**
+!ohp_form_pipeline/models/README.md
+
+# Cache
+ohp_form_pipeline/data/cache/

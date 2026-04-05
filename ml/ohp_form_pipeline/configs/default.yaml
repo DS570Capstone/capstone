@@ -1,0 +1,107 @@
+pipeline:
+  exercise: "ohp"
+  camera_position: "BACK"
+  max_height: 720
+  max_frames: 128 # resample to this length for model input
+  frame_step: 1 # process every Nth frame (1 = all)
+  cache_dir: "data/cache"
+  output_dir: "outputs"
+
+pose:
+  backend: "mediapipe" # "mediapipe" | "yolo" | "rtmpose"
+  confidence_threshold: 0.5
+  smooth_window: 11 # Savitzky-Golay window size
+  smooth_poly: 3
+  smooth_method: "savgol" # "none" | "savgol" | "one_euro"
+  one_euro_min_cutoff: 1.0
+  one_euro_beta: 0.02
+  one_euro_d_cutoff: 1.0
+  one_euro_min_visibility: 0.5
+  one_euro_max_jump_px: 60.0
+  one_euro_max_interp_gap: 8
+
+bar:
+  backend: "wrist_heuristic" # "yolo" | "wrist_heuristic"
+  yolo_weights: "models/bar_detector.pt"
+  wrist_span_scale: 0.5 # fraction of wrist-to-wrist span as bar half-width
+  min_confidence: 0.3
+
+depth:
+  enabled: true
+  backend: "depth_anything_v2" # "depth_anything_v2" | "depth_anything_v1" | "midas"
+  model_size: "small" # "small" | "base" | "large"
+  model_id: "depth-anything/Depth-Anything-V2-Small-hf"
+  cache_depth: true
+  colorize_previews: true
+
+signals:
+  resample_length: 128
+  smooth_window: 7
+  smooth_poly: 3
+  normalize: true
+
+jitter_filter:
+  max_jump_ratio: 0.32
+  min_valid_keypoints: 8
+  min_joint_jump_px: 6.0
+  max_interp_gap: 4
+
+tracking_filter:
+  confidence_threshold: 0.5
+  jump_ratio_threshold: 0.25
+  min_jump_px: 6.0
+  max_interp_gap: 5
+  body_normalized_smoothing: true
+  bar_confidence_threshold: 0.2
+  bar_jump_ratio_threshold: 0.25
+  bar_min_jump_px: 6.0
+
+clustering:
+  n_jobs: -1
+  random_state: 42
+  feature_clustering:
+    method: "hdbscan" # "hdbscan" | "kmeans" | "gmm" | "agglomerative"
+    min_cluster_size: 3
+    min_samples: 2
+    kmeans_k: 8
+  latent_clustering:
+    method: "hdbscan"
+    min_cluster_size: 3
+    min_samples: 2
+  anomaly:
+    method: "isolation_forest"
+    contamination: 0.1
+  umap:
+    n_neighbors: 15
+    min_dist: 0.1
+    n_components: 2
+
+embedding:
+  model: "tcn" # "tcn" | "transformer" | "gru"
+  input_channels: 4 # arm, legs, core, bar
+  d_model: 64
+  n_layers: 4
+  kernel_size: 3
+  dropout: 0.1
+  latent_dim: 32
+
+vlm:
+  enabled: false # set true when model downloaded
+  model_id: "Qwen/Qwen2.5-0.5B-Instruct"
+  max_new_tokens: 512
+  temperature: 0.3
+  device: "cuda"
+  num_key_frames: 4
+  adapter_path: "checkpoints/vision_adapter.pt"
+  lora_path: "checkpoints/language_lora"
+
+viz:
+  save_annotated_video: true
+  save_plots: true
+  save_harmonic_plot: true
+  save_depth_previews: true
+  overlay_max_hold: 3
+  fps_output: 30
+  skeleton_color: [0, 255, 0]
+  bar_color: [0, 0, 255]
+  fault_color: [0, 0, 255]

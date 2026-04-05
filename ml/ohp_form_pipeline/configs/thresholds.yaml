@@ -1,0 +1,52 @@
+# Fault detection thresholds — tuned for back-view OHP
+faults:
+  left_right_lockout_asymmetry:
+    metric: "wrist_height_diff_at_lockout_normalized"
+    threshold: 0.05          # > 5% of shoulder width = asymmetric lockout
+    direction: "gt"
+
+  bar_tilt_instability:
+    metric: "bar_tilt_std_deg"
+    threshold: 3.0           # > 3 deg std = unstable bar
+    direction: "gt"
+
+  lateral_bar_drift:
+    metric: "bar_lateral_drift_normalized"
+    threshold: 0.08          # > 8% shoulder width = drift
+    direction: "gt"
+
+  uneven_press_timing:
+    metric: "lockout_delay_sec"
+    threshold: 0.10          # > 100ms between sides = uneven
+    direction: "gt"
+
+  compensatory_lateral_shift:
+    metric: "trunk_lateral_shift_normalized"
+    threshold: 0.06
+    direction: "gt"
+
+  trunk_shift_under_load:
+    metric: "trunk_shift_peak_normalized"
+    threshold: 0.08
+    direction: "gt"
+
+  hip_shift_compensation:
+    metric: "hip_lateral_shift_normalized"
+    threshold: 0.07
+    direction: "gt"
+
+  unstable_lockout:
+    metric: "bar_lockout_oscillation"
+    threshold: 0.04
+    direction: "gt"
+
+  forward_bar_drift_depth_proxy:
+    metric: "bar_depth_drift_normalized"
+    threshold: 0.10
+    direction: "gt"
+
+quality_thresholds:
+  grade_A: 0.85
+  grade_B: 0.70
+  grade_C: 0.55
+  grade_D: 0.40

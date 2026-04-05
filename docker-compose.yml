@@ -1,0 +1,175 @@
+version: "3.9"
+
+x-common-env: &common-env
+  DATABASE_URL: postgresql://liftlens:liftlens_secret@postgres:5432/liftlens
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: minioadmin
+  MINIO_SECRET_KEY: minioadmin
+  MINIO_BUCKET: videos
+  KAFKA_BOOTSTRAP: kafka:29092
+  WANDB_API_KEY: ${WANDB_API_KEY:-}
+  WANDB_PROJECT: ${WANDB_PROJECT:-liftlens-ohp}
+  WANDB_ENABLED: ${WANDB_ENABLED:-true}
+  ML_ROOT: /app/ml
+
+services:
+
+  # ── Frontend (Vite) ───────────────────────────────────────────────────────
+  frontend:
+    image: node:20-alpine
+    container_name: liftlens-frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 3000"
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_PROXY_TARGET: http://api:5050
+    volumes:
+      - ./frontend:/app
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: liftlens-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: liftlens
+      POSTGRES_PASSWORD: liftlens_secret
+      POSTGRES_DB: liftlens
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U liftlens"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── MinIO (object storage for raw videos + annotated outputs) ──────────────
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: liftlens-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Zookeeper (Kafka dependency) ───────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: liftlens-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+
+  # ── Kafka ─────────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: liftlens-kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:29092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ── Kafka UI ───────────────────────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: liftlens-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: liftlens
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+  # ── Flask API ──────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: liftlens-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "5050:5050"
+    environment:
+      <<: *common-env
+    command: ["python", "-m", "api.server"]
+    volumes:
+      - ./backend/api:/app/api
+      - ml_outputs:/app/ml/outputs
+
+  # ── ML Worker (Kafka consumer) ─────────────────────────────────────────────
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: liftlens-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+    command: ["python", "-m", "worker.worker"]
+    volumes:
+      - ./backend/worker:/app/worker
+      - ./ml/ohp_form_pipeline:/app/ml:ro
+      - ml_outputs:/app/ml/outputs
+
+volumes:
+  postgres_data:
+  minio_data:
+  kafka_data:
+  zookeeper_data:
+  zookeeper_log:
+  ml_outputs:

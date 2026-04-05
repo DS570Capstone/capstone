@@ -1,0 +1,54 @@
+# OHP coaching rule library — back view
+# Each rule: id, condition (links to fault flag), cue (actionable coaching text), severity
+rules:
+  - id: R01
+    fault: left_right_lockout_asymmetry
+    cue: "Lock out both arms simultaneously. The stronger side is reaching lockout earlier — consciously drive the weaker side to match."
+    severity: "moderate"
+
+  - id: R02
+    fault: bar_tilt_instability
+    cue: "Keep the bar level throughout the press. Uneven grip width or left-right strength imbalance causes bar tilt. Check your grip symmetry."
+    severity: "moderate"
+
+  - id: R03
+    fault: lateral_bar_drift
+    cue: "Press the bar straight overhead. Lateral drift suggests asymmetric force production. Cue: push the bar toward the ceiling along your midline."
+    severity: "moderate"
+
+  - id: R04
+    fault: uneven_press_timing
+    cue: "Both arms should reach lockout at the same time. Practise single-arm pressing to address unilateral weakness."
+    severity: "low"
+
+  - id: R05
+    fault: compensatory_lateral_shift
+    cue: "Keep your torso centered under the bar. A lateral trunk shift usually compensates for a weak side. Brace your core harder and focus on symmetrical drive."
+    severity: "high"
+
+  - id: R06
+    fault: trunk_shift_under_load
+    cue: "Your trunk is shifting laterally under load. Brace the core tightly before initiating the press. This protects the spine and improves force transfer."
+    severity: "high"
+
+  - id: R07
+    fault: hip_shift_compensation
+    cue: "Keep your hips centered. Hip shift often indicates you are using lateral momentum rather than vertical pressing force. Stand with even weight distribution."
+    severity: "moderate"
+
+  - id: R08
+    fault: unstable_lockout
+    cue: "The bar is oscillating at lockout. Aim for a firm, controlled overhead position. Pause for one second at lockout to reinforce stability."
+    severity: "low"
+
+  - id: R09
+    fault: forward_bar_drift_depth_proxy
+    cue: "The bar is drifting forward relative to your shoulder plane. Press the bar vertically and keep it stacked over your base of support."
+    severity: "moderate"
+
+general_cues:
+  symmetric_press: "Your pressing mechanics are well-balanced between sides. Maintain this symmetry as load increases."
+  stable_lockout: "Strong lockout position. The bar is stable and centered."
+  smooth_bar_path: "The bar travels in a clean, direct path. Efficient force application."
+
+uncertainty_disclaimer: "Analysis based on back-view camera. Sagittal-plane faults (e.g., forward lean) are estimated via depth proxy and may be less reliable than frontal-plane assessments."
