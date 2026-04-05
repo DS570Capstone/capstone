@@ -1,9 +1,9 @@
 pipeline:
   exercise: "ohp"
   camera_position: "BACK"
-  max_height: 720
-  max_frames: 128 # resample to this length for model input
-  frame_step: 1 # process every Nth frame (1 = all)
+  max_height: 480      # reduced from 720 — cuts per-frame RAM ~55%, faster pose estimation
+  max_frames: 64       # reduced from 128 — halves trajectory resampling cost; sufficient for rep analysis
+  frame_step: 2        # process every 2nd frame — halves pose estimation time on CPU
   cache_dir: "data/cache"
   output_dir: "outputs"
 
@@ -27,7 +27,8 @@ bar:
   min_confidence: 0.3
 
 depth:
-  enabled: true
+  enabled: false       # disabled for CPU — would trigger ~400 MB HuggingFace download
+                       # and run at ~10s/frame on CPU. Set true only on GPU.
   backend: "depth_anything_v2" # "depth_anything_v2" | "depth_anything_v1" | "midas"
   model_size: "small" # "small" | "base" | "large"
   model_id: "depth-anything/Depth-Anything-V2-Small-hf"
@@ -86,7 +87,7 @@ embedding:
   latent_dim: 32
 
 vlm:
-  enabled: false # set true when model downloaded
+  enabled: false # CPU: keep false. Requires GPU + peft package + downloaded Qwen2.5-0.5B model.
   model_id: "Qwen/Qwen2.5-0.5B-Instruct"
   max_new_tokens: 512
   temperature: 0.3

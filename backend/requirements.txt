@@ -1,21 +1,59 @@
+# ── Web framework ──────────────────────────────────────────────────────────────
 flask==3.0.3
 flask-cors==4.0.1
 gunicorn==22.0.0
+
+# ── Database ───────────────────────────────────────────────────────────────────
 psycopg2-binary==2.9.9
+
+# ── Object storage ─────────────────────────────────────────────────────────────
 minio==7.2.7
+
+# ── Message queue ──────────────────────────────────────────────────────────────
+# kafka-python MUST stay: server.py and worker.py import KafkaProducer/KafkaConsumer
+# at module level. Removing this causes ImportError on container startup even if
+# Kafka service is not running. The API catches NoBrokersAvailable and falls back
+# to inline processing.
 kafka-python==2.0.2
-wandb==0.17.3
-python-dotenv==1.0.1
+
+# ── HTTP / env ─────────────────────────────────────────────────────────────────
 requests==2.32.3
+python-dotenv==1.0.1
+
+# ── Numerics + signal processing ───────────────────────────────────────────────
 numpy==1.26.4
-opencv-python-headless==4.9.0.80
-mediapipe==0.10.14
-torch==2.3.0
-torchvision==0.18.0
-transformers==4.41.2
-hdbscan>=0.8.33,<0.9
-umap-learn==0.5.6
-scikit-learn==1.4.2
 scipy==1.13.1
+
+# ── Computer vision ────────────────────────────────────────────────────────────
+# opencv-python-headless: no GUI deps — correct for Docker/server use
+opencv-python-headless==4.9.0.80
+# mediapipe: pose estimation — loads pose_landmarker_heavy.task at runtime
+mediapipe==0.10.14
+
+# ── PyTorch (CPU-only build) ───────────────────────────────────────────────────
+# CPU wheel is ~220 MB vs ~2.4 GB for CUDA build.
+# torch is imported lazily in the live pipeline (_has_cuda check only).
+# Required for: depth estimation (if enabled) and VLM (if enabled).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.0+cpu
+torchvision==0.18.0+cpu
+
+# ── Transformers ───────────────────────────────────────────────────────────────
+# Required if depth.enabled=true (Depth Anything V2 via HuggingFace pipeline)
+# or vlm.enabled=true. All imports are lazy (inside try/if blocks).
+# DO NOT remove — re-enabling depth in default.yaml would cause silent failure.
+transformers==4.41.2
+
+# ── Clustering + ML ────────────────────────────────────────────────────────────
+# scikit-learn: used by batch_process.py and train.py. Kept because it is a
+# lightweight transitive dep and may be needed by future pipeline additions.
+scikit-learn==1.4.2
+# hdbscan + umap-learn are used ONLY in batch_process.py (offline batch tool),
+# NOT in run_single_video.py (live pipeline). Removed to save ~150 MB + build time.
+# Add them back if you run batch_process.py inside Docker.
+
+# ── Visualization ──────────────────────────────────────────────────────────────
+# matplotlib is imported at MODULE LEVEL in signal_plots.py which is imported
+# unconditionally by run_single_video.py. DO NOT remove.
 matplotlib==3.9.0
 Pillow==10.3.0
