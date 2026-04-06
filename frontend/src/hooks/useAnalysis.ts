@@ -16,6 +16,26 @@ export function useAnalysis(videoId: string | null) {
     if (!videoId) return
     setState({ phase: 'queuing' })
     try {
+      // Check existing status before triggering — navigating from History must not re-run a completed job
+      let existing: JobStatus | null = null
+      try { existing = await getJobStatus(videoId) } catch { /* not found — will trigger below */ }
+
+      if (existing?.status === 'done') {
+        const result = await getResults(videoId)
+        setState({ phase: 'done', result, wandbUrl: existing.wandbUrl, filename: existing.filename })
+        return
+      }
+      if (existing?.status === 'error' || existing?.status === 'invalid') {
+        setState({ phase: 'error', message: existing.error || 'Analysis failed' })
+        return
+      }
+      if (existing?.status === 'running') {
+        // Worker already running — re-attach to polling without re-triggering
+        const initialStatus: JobStatus = { jobId: videoId, videoId, status: 'running', progress: existing.progress, stage: existing.stage }
+        setState({ phase: 'polling', jobId: videoId, status: initialStatus })
+        return
+      }
+      // 'queued' (just uploaded, worker not started) or job not found — trigger analysis
       const { jobId } = await triggerAnalysis(videoId)
       const initialStatus: JobStatus = { jobId, videoId, status: 'queued', progress: 0, stage: 'Queued' }
       setState({ phase: 'polling', jobId, status: initialStatus })

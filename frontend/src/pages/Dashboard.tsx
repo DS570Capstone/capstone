@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useEffect } from 'react'
-import { Triangle, ArrowLeft, Loader, AlertCircle, AlertTriangle, ExternalLink, Play } from 'lucide-react'
+import { Triangle, ArrowLeft, Loader, AlertCircle, AlertTriangle, ExternalLink, Play, History } from 'lucide-react'
 import { useAnalysis } from '../hooks/useAnalysis'
 import QualityGauge from '../components/QualityGauge'
 import FaultFlags from '../components/FaultFlags'
@@ -45,6 +45,14 @@ export default function Dashboard() {
         </div>
         <span className="text-white font-bold">LiftLens</span>
         <span className="text-zinc-700 text-sm ml-1">/ {displayName}</span>
+
+        <button
+          onClick={() => navigate('/history')}
+          className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors"
+        >
+          <History size={14} />
+          History
+        </button>
 
         {state.phase === 'done' && state.wandbUrl && (
           <a href={state.wandbUrl} target="_blank" rel="noopener noreferrer"

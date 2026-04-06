@@ -1,9 +1,15 @@
 import { useState, useRef, DragEvent } from 'react'
-import { Upload, Loader, CheckCircle, Triangle } from 'lucide-react'
-import { uploadVideo } from '../api/client'
+import { Upload, Loader, CheckCircle, Triangle, History, AlertTriangle } from 'lucide-react'
+import { uploadVideo, checkDuplicate } from '../api/client'
 import { useNavigate } from 'react-router-dom'
 
-type Phase = 'idle' | 'uploading' | 'done' | 'error'
+type Phase = 'idle' | 'hashing' | 'uploading' | 'done' | 'error'
+
+async function sha256(file: File): Promise<string> {
+  const buf = await file.arrayBuffer()
+  const digest = await crypto.subtle.digest('SHA-256', buf)
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
 
 export default function UploadCard() {
   const [phase, setPhase] = useState<Phase>('idle')
@@ -11,6 +17,7 @@ export default function UploadCard() {
   const [error, setError] = useState('')
   const [filename, setFilename] = useState('')
   const [dragging, setDragging] = useState(false)
+  const [duplicate, setDuplicate] = useState<{ videoId: string; grade: string | null; filename: string; createdAt: string } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
 
@@ -28,16 +35,13 @@ export default function UploadCard() {
       setPhase('error')
       return
     }
-    // Check video duration before uploading
+    // Duration check
     const durationOk = await new Promise<boolean>(resolve => {
       const url = URL.createObjectURL(file)
       const vid = document.createElement('video')
       vid.preload = 'metadata'
-      vid.onloadedmetadata = () => {
-        URL.revokeObjectURL(url)
-        resolve(vid.duration <= MAX_DURATION_SEC)
-      }
-      vid.onerror = () => { URL.revokeObjectURL(url); resolve(true) } // allow if can't read
+      vid.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(vid.duration <= MAX_DURATION_SEC) }
+      vid.onerror = () => { URL.revokeObjectURL(url); resolve(true) }
       vid.src = url
     })
     if (!durationOk) {
@@ -45,13 +49,33 @@ export default function UploadCard() {
       setPhase('error')
       return
     }
+
+    // Hash the file and check for duplicates
     setFilename(file.name)
+    setPhase('hashing')
+    let fileHash = ''
+    try {
+      fileHash = await sha256(file)
+      const check = await checkDuplicate(fileHash)
+      if (check.duplicate && check.status === 'done') {
+        setDuplicate({
+          videoId: check.video_id,
+          grade: check.grade,
+          filename: check.filename,
+          createdAt: check.created_at,
+        })
+        setPhase('idle')
+        return
+      }
+    } catch {
+      // Hash or check failed — continue with upload anyway
+    }
+
     setPhase('uploading')
     setProgress(0)
     try {
-      // Fake progress tick
       const ticker = setInterval(() => setProgress(p => Math.min(p + 8, 85)), 300)
-      const { videoId } = await uploadVideo(file)
+      const { videoId } = await uploadVideo(file, fileHash)
       clearInterval(ticker)
       setProgress(100)
       setPhase('done')
@@ -77,7 +101,13 @@ export default function UploadCard() {
           <Triangle size={13} fill="white" stroke="none" />
         </div>
         <span className="text-white font-bold">LiftLens</span>
-        <span className="ml-auto text-zinc-600 text-xs">OHP Form Analysis</span>
+        <button
+          onClick={() => navigate('/history')}
+          className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors"
+        >
+          <History size={14} />
+          History
+        </button>
       </nav>
 
       <div className="flex-1 flex items-center justify-center px-4 py-12">
@@ -93,6 +123,34 @@ export default function UploadCard() {
               detects movement faults, and delivers AI coaching.
             </p>
           </div>
+
+          {/* Duplicate banner */}
+          {duplicate && (
+            <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-2xl p-4 flex items-start gap-3">
+              <AlertTriangle size={18} className="text-yellow-400 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-yellow-300 font-semibold text-sm">This video was already analysed</p>
+                <p className="text-zinc-400 text-xs mt-0.5 truncate">
+                  {duplicate.filename} · {new Date(duplicate.createdAt).toLocaleDateString()}
+                  {duplicate.grade && <> · Grade <span className="text-white font-bold">{duplicate.grade}</span></>}
+                </p>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <button
+                  onClick={() => navigate(`/dashboard/${duplicate.videoId}`)}
+                  className="text-xs bg-indigo-500 hover:bg-indigo-400 text-white px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  View result
+                </button>
+                <button
+                  onClick={() => setDuplicate(null)}
+                  className="text-xs text-zinc-400 hover:text-white px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  Re-analyse
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Drop zone */}
           <div
@@ -120,6 +178,16 @@ export default function UploadCard() {
                   <p className="text-zinc-500 text-sm">MP4, MOV, AVI · back-view OHP · max 90s · max 500 MB</p>
                 </div>
                 <span className="text-xs text-zinc-600 bg-zinc-800 px-3 py-1.5 rounded-lg">Browse files</span>
+              </>
+            )}
+
+            {phase === 'hashing' && (
+              <>
+                <Loader size={32} className="text-zinc-500 animate-spin" />
+                <div className="text-center">
+                  <p className="text-white font-semibold mb-1">Checking for duplicates…</p>
+                  <p className="text-zinc-500 text-sm font-mono truncate max-w-xs">{filename}</p>
+                </div>
               </>
             )}
 

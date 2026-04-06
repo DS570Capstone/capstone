@@ -72,6 +72,36 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/check-duplicate")
+def check_duplicate():
+    """Check if a file with the given SHA-256 hash was already processed."""
+    file_hash = request.args.get("hash", "").strip()
+    if not file_hash:
+        return jsonify(duplicate=False)
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT j.video_id, j.filename, j.status, j.created_at,
+                          r.artifact->'wave_features'->'quality'->>'grade' AS grade
+                   FROM jobs j
+                   LEFT JOIN results r USING (video_id)
+                   WHERE j.file_hash = %s
+                   ORDER BY j.created_at DESC LIMIT 1""",
+                (file_hash,),
+            )
+            row = cur.fetchone()
+    if not row:
+        return jsonify(duplicate=False)
+    return jsonify(
+        duplicate=True,
+        video_id=row["video_id"],
+        filename=row["filename"],
+        status=row["status"],
+        grade=row["grade"],
+        created_at=row["created_at"].isoformat() if row["created_at"] else None,
+    )
+
+
 @app.post("/api/upload")
 def upload():
     """Receive a video file, store in MinIO, return a video_id."""
@@ -79,6 +109,7 @@ def upload():
         return jsonify(error="No video file"), 400
 
     file      = request.files["video"]
+    file_hash = request.form.get("file_hash") or None
     video_id  = str(uuid.uuid4())
     original_filename = file.filename or "video.mp4"
     ext       = os.path.splitext(original_filename)[1] or ".mp4"
@@ -98,12 +129,49 @@ def upload():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO jobs (video_id, object_name, filename, status, stage)
-                   VALUES (%s, %s, %s, 'queued', 'Queued')""",
-                (video_id, obj_name, original_filename),
+                """INSERT INTO jobs (video_id, object_name, filename, file_hash, status, stage)
+                   VALUES (%s, %s, %s, %s, 'queued', 'Queued')""",
+                (video_id, obj_name, original_filename, file_hash),
             )
 
     return jsonify(video_id=video_id, object_name=obj_name), 201
+
+
+@app.get("/api/history")
+def history():
+    """Return all jobs ordered by most recent, with grade and fault summary."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT
+                       j.video_id,
+                       j.filename,
+                       j.status,
+                       j.created_at,
+                       j.updated_at,
+                       j.error,
+                       r.artifact->'wave_features'->'quality'->>'grade'       AS grade,
+                       r.artifact->>'duration_sec'                             AS duration_sec,
+                       r.artifact->'fault_flags'                               AS fault_flags
+                   FROM jobs j
+                   LEFT JOIN results r USING (video_id)
+                   ORDER BY j.created_at DESC
+                   LIMIT 100""",
+            )
+            rows = cur.fetchall()
+    return jsonify([
+        {
+            "video_id":    r["video_id"],
+            "filename":    r["filename"],
+            "status":      r["status"],
+            "created_at":  r["created_at"].isoformat() if r["created_at"] else None,
+            "grade":       r["grade"],
+            "duration_sec": float(r["duration_sec"]) if r["duration_sec"] else None,
+            "fault_count": sum(1 for v in (r["fault_flags"] or {}).values() if v),
+            "error":       r["error"],
+        }
+        for r in rows
+    ])
 
 
 @app.post("/api/analyze/<video_id>")

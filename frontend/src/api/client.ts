@@ -1,8 +1,15 @@
 const BASE = '/api'
 
-export async function uploadVideo(file: File): Promise<{ videoId: string; objectName: string }> {
+export async function checkDuplicate(hash: string): Promise<DuplicateCheck> {
+  const res = await fetch(`${BASE}/check-duplicate?hash=${encodeURIComponent(hash)}`)
+  if (!res.ok) return { duplicate: false }
+  return res.json()
+}
+
+export async function uploadVideo(file: File, fileHash?: string): Promise<{ videoId: string; objectName: string }> {
   const form = new FormData()
   form.append('video', file)
+  if (fileHash) form.append('file_hash', fileHash)
   const res = await fetch(`${BASE}/upload`, { method: 'POST', body: form })
   if (!res.ok) throw new Error(await res.text())
   const data = await res.json()
@@ -10,6 +17,12 @@ export async function uploadVideo(file: File): Promise<{ videoId: string; object
     videoId: data.video_id,
     objectName: data.object_name,
   }
+}
+
+export async function getHistory(): Promise<HistoryItem[]> {
+  const res = await fetch(`${BASE}/history`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
 }
 
 export async function triggerAnalysis(videoId: string): Promise<{ jobId: string }> {
@@ -141,3 +154,18 @@ export type Language = {
   coach_feedback: string
   reasoning_trace_short: string
 }
+
+export type HistoryItem = {
+  video_id: string
+  filename: string | null
+  status: 'queued' | 'running' | 'done' | 'error' | 'invalid'
+  created_at: string
+  grade: string | null
+  duration_sec: number | null
+  fault_count: number
+  error: string | null
+}
+
+export type DuplicateCheck =
+  | { duplicate: false }
+  | { duplicate: true; video_id: string; filename: string; status: string; grade: string | null; created_at: string }

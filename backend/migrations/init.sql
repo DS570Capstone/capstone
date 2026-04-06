@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     video_id    TEXT NOT NULL UNIQUE,
     object_name TEXT NOT NULL,
     filename    TEXT,                              -- original uploaded filename
+    file_hash   TEXT,                              -- SHA-256 of file content for duplicate detection
     status      TEXT NOT NULL DEFAULT 'queued',   -- queued | running | done | error
     progress    INTEGER NOT NULL DEFAULT 0,        -- 0-100
     stage       TEXT NOT NULL DEFAULT 'Queued',
