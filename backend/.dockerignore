@@ -1,0 +1,42 @@
+# Exclude everything by default, then whitelist what the Dockerfile actually COPYs.
+# This prevents model weights, videos, and ML artifacts from being sent to the
+# Docker daemon as build context on every `docker build`.
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Git
+.git/
+.gitignore

@@ -1,3 +1,6 @@
+# Inference dependencies — sufficient to run run_single_video.py and the web API.
+# For training, batch processing, or VLM/depth, also install requirements-train.txt.
+
 # Core
 numpy>=1.24
 scipy>=1.10
@@ -9,30 +12,12 @@ tqdm>=4.65
 opencv-python>=4.8
 mediapipe>=0.10
 
-# Deep Learning (optional but recommended)
-torch>=2.1
-torchvision>=0.16
-transformers>=4.37
-peft>=0.7
-einops>=0.7
-
 # Signal processing / ML
 scikit-learn>=1.3
-hdbscan>=0.8.33
-umap-learn>=0.5.5
-tslearn>=0.6
 
-# Visualization
+# Visualization (lazy-loaded — only imported when save_plots=true)
 matplotlib>=3.7
-plotly>=5.15
-
-# Utilities
 Pillow>=10.0
 
-# PDF extraction (for training data from S&C manual)
-PyMuPDF>=1.23
-
-# Experiment tracking & tracing
-wandb>=0.16
-weave>=0.50
+# Utilities
 python-dotenv>=1.0

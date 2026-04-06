@@ -36,7 +36,7 @@ depth:
   colorize_previews: true
 
 signals:
-  resample_length: 128
+  resample_length: 64   # match max_frames — was 128 (upsampling sparse data adds noise)
   smooth_window: 7
   smooth_poly: 3
   normalize: true
@@ -58,7 +58,7 @@ tracking_filter:
   bar_min_jump_px: 6.0
 
 clustering:
-  n_jobs: -1
+  n_jobs: 2   # was -1 — limits CPU cores to prevent thermal throttle on laptop
   random_state: 42
   feature_clustering:
     method: "hdbscan" # "hdbscan" | "kmeans" | "gmm" | "agglomerative"
@@ -91,7 +91,7 @@ vlm:
   model_id: "Qwen/Qwen2.5-0.5B-Instruct"
   max_new_tokens: 512
   temperature: 0.3
-  device: "cuda"
+  device: "cpu"   # was "cuda" — safe default for CPU-only laptop
   num_key_frames: 4
   adapter_path: "checkpoints/vision_adapter.pt"
   lora_path: "checkpoints/language_lora"

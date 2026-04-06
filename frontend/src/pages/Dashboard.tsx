@@ -25,6 +25,9 @@ export default function Dashboard() {
   const { videoId } = useParams<{ videoId: string }>()
   const navigate = useNavigate()
   const { state, start } = useAnalysis(videoId ?? null)
+  const displayName = state.phase === 'done' && state.filename
+    ? state.filename.replace(/\.[^.]+$/, '')   // strip extension
+    : videoId?.slice(0, 8) + '…'
 
   useEffect(() => {
     if (videoId && state.phase === 'idle') start()
@@ -41,7 +44,7 @@ export default function Dashboard() {
           <Triangle size={11} fill="white" stroke="none" />
         </div>
         <span className="text-white font-bold">LiftLens</span>
-        <span className="text-zinc-700 text-sm ml-1">/ {videoId?.slice(0, 8)}…</span>
+        <span className="text-zinc-700 text-sm ml-1">/ {displayName}</span>
 
         {state.phase === 'done' && state.wandbUrl && (
           <a href={state.wandbUrl} target="_blank" rel="noopener noreferrer"
@@ -127,7 +130,7 @@ export default function Dashboard() {
               {/* Header */}
               <div className="flex items-center justify-between flex-wrap gap-3">
                 <div>
-                  <h1 className="text-white font-bold text-2xl">{r.video_id}</h1>
+                  <h1 className="text-white font-bold text-2xl">{displayName}</h1>
                   <p className="text-zinc-500 text-sm mt-0.5">
                     {r.exercise.toUpperCase()} · {r.camera_position} · {r.duration_sec.toFixed(2)}s
                   </p>

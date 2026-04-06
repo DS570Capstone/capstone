@@ -44,6 +44,9 @@ def load_video_meta(path: str, video_id: Optional[str] = None) -> VideoMeta:
     )
 
 
+_MAX_DIM = 65535  # PIL / MediaPipe hard limit (2^16 - 1)
+
+
 def iter_frames(
     path: str,
     max_height: int = 720,
@@ -59,9 +62,18 @@ def iter_frames(
         if not ret:
             break
         if idx % frame_step == 0:
-            if frame.shape[0] > max_height:
-                scale = max_height / frame.shape[0]
-                new_w = int(frame.shape[1] * scale)
+            # Guard against corrupted frames from HEVC/VFR phone videos where
+            # OpenCV can return a frame with garbage dimensions.
+            if frame is None or frame.ndim != 3:
+                idx += 1
+                continue
+            h, w = frame.shape[:2]
+            if h == 0 or w == 0 or h > _MAX_DIM or w > _MAX_DIM:
+                idx += 1
+                continue
+            if h > max_height:
+                scale = max_height / h
+                new_w = int(w * scale)
                 frame = cv2.resize(frame, (new_w, max_height), interpolation=cv2.INTER_AREA)
             yield idx, frame
         idx += 1

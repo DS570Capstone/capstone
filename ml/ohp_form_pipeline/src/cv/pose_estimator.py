@@ -148,13 +148,30 @@ class MediaPipePoseEstimator:
             confidence_threshold=threshold,
         )
 
+    def _empty_pose(self, frame_idx: int) -> PoseResult:
+        n_kp = len(KEYPOINT_NAMES)
+        return PoseResult(
+            keypoints=np.full((n_kp, 2), np.nan),
+            confidences=np.zeros(n_kp),
+            visible=np.zeros(n_kp, dtype=bool),
+            frame_idx=frame_idx,
+            confidence_threshold=self.conf_thresh,
+        )
+
     def process_frame(self, bgr_frame: np.ndarray, frame_idx: int) -> PoseResult:
         import cv2
         import mediapipe as mp
 
-        rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
         h, w = bgr_frame.shape[:2]
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        # Reject frames with dimensions outside the PIL/MediaPipe hard limit.
+        if h == 0 or w == 0 or h > 65535 or w > 65535:
+            return self._empty_pose(frame_idx)
+
+        rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+        try:
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        except Exception:
+            return self._empty_pose(frame_idx)
 
         # Pass 1: primary landmarker
         result = self._landmarker.detect(mp_image)

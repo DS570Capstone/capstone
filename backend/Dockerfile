@@ -2,8 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy requirements first so this layer is cached unless requirements change
-COPY requirements.txt .
+# Copy requirements first so this layer is cached unless requirements change.
+# requirements.txt — inference-only (~380 MB installed, no torch/transformers).
+# requirements-extras.txt — add only if depth.enabled or vlm.enabled in default.yaml.
+COPY requirements.txt requirements-extras.txt* ./
 
 # Install system dependencies, pip packages, then remove build tools — all in
 # one RUN layer so Docker doesn't cache the build tools in a separate layer.

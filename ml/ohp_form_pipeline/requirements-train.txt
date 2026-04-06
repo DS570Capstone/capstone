@@ -1,0 +1,31 @@
+# Training, batch processing, and VLM/depth dependencies.
+# Install in addition to requirements.txt:
+#   pip install -r requirements.txt -r requirements-train.txt
+#
+# Not needed to run run_single_video.py or the web API.
+
+# ── Deep Learning ──────────────────────────────────────────────────────────────
+# CPU wheels (~270 MB). Swap index URL for CUDA wheels if running on GPU.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.1
+torchvision>=0.16
+
+# ── Model adapters (VLM fine-tuning) ──────────────────────────────────────────
+transformers>=4.37
+peft>=0.7
+einops>=0.7
+
+# ── Batch processing / clustering ─────────────────────────────────────────────
+hdbscan>=0.8.33
+umap-learn>=0.5.5
+tslearn>=0.6
+
+# ── Interactive visualization ─────────────────────────────────────────────────
+plotly>=5.15
+
+# ── PDF extraction (training data from S&C manual) ────────────────────────────
+PyMuPDF>=1.23
+
+# ── Experiment tracking & tracing ─────────────────────────────────────────────
+wandb>=0.16
+weave>=0.50

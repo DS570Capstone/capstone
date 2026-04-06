@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     video_id    TEXT NOT NULL UNIQUE,
     object_name TEXT NOT NULL,
+    filename    TEXT,                              -- original uploaded filename
     status      TEXT NOT NULL DEFAULT 'queued',   -- queued | running | done | error
     progress    INTEGER NOT NULL DEFAULT 0,        -- 0-100
     stage       TEXT NOT NULL DEFAULT 'Queued',

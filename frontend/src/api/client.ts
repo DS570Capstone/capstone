@@ -30,6 +30,7 @@ export async function getJobStatus(jobId: string): Promise<JobStatus> {
     stage: data.stage,
     error: data.error,
     wandbUrl: data.wandb_url,
+    filename: data.filename ?? undefined,
   }
 }
 
@@ -56,6 +57,7 @@ export type JobStatus = {
   stage: string
   error?: string
   wandbUrl?: string
+  filename?: string
 }
 
 export type AnalysisResult = {

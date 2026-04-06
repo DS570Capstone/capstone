@@ -5,7 +5,7 @@ type State =
   | { phase: 'idle' }
   | { phase: 'queuing' }
   | { phase: 'polling'; jobId: string; status: JobStatus }
-  | { phase: 'done'; result: AnalysisResult; wandbUrl?: string }
+  | { phase: 'done'; result: AnalysisResult; wandbUrl?: string; filename?: string }
   | { phase: 'error'; message: string }
 
 export function useAnalysis(videoId: string | null) {
@@ -37,7 +37,7 @@ export function useAnalysis(videoId: string | null) {
         if (status.status === 'done') {
           clearInterval(intervalRef.current!)
           const result = await getResults(status.videoId)
-          setState({ phase: 'done', result, wandbUrl: status.wandbUrl })
+          setState({ phase: 'done', result, wandbUrl: status.wandbUrl, filename: status.filename })
         } else if (status.status === 'error') {
           clearInterval(intervalRef.current!)
           setState({ phase: 'error', message: status.error || 'Analysis failed' })

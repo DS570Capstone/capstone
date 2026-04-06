@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import os
 import numpy as np
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 
 from ..signals.smoothing import compute_derivatives
+
+
+def _mpl():
+    """Lazy-load matplotlib on first use (~50 MB; skipped if plots are disabled)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+    return plt, gridspec
 
 
 def plot_trajectories(
@@ -19,6 +23,7 @@ def plot_trajectories(
     out_path: str,
     fps: float = 30.0,
 ) -> None:
+    plt, _ = _mpl()
     fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
     keys = [
         "bar_path_trajectory",
@@ -77,6 +82,7 @@ def plot_signal_dashboard(
     phases: list[dict],
     out_path: str,
 ) -> None:
+    plt, gridspec = _mpl()
     from scipy.fft import rfft, rfftfreq
 
     valid = bar_cy[~np.isnan(bar_cy)]
@@ -148,6 +154,7 @@ def plot_bilateral_symmetry(
     right_elbow_deg: np.ndarray,
     out_path: str,
 ) -> None:
+    plt, _ = _mpl()
     fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
     t = np.arange(len(left_wrist_y))
     axes[0].plot(t, left_wrist_y, label="Left wrist Y", color="#2196F3")
@@ -182,6 +189,7 @@ def plot_harmonic_wave_patterns(
     if len(valid) < 8:
         return
 
+    plt, _ = _mpl()
     from scipy.fft import rfft, rfftfreq
 
     t = np.arange(len(valid)) / max(fps, 1e-6)

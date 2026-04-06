@@ -24,6 +24,16 @@ KAFKA_TOPIC       = "video.uploaded"
 app = Flask(__name__)
 CORS(app)
 
+# ── Upload limit ─────────────────────────────────────────────────────────────
+# Reject uploads > 500 MB before they reach MinIO or the ML pipeline.
+# A typical 60-second phone video is 50-150 MB; 500 MB is a generous ceiling.
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB
+
+# ── Inline worker concurrency guard ──────────────────────────────────────────
+# Limits the ML pipeline to one analysis at a time when running without Kafka.
+# Each analysis peaks at ~1.5 GB RAM; two simultaneous runs would OOM a 16 GB laptop.
+_worker_semaphore = threading.Semaphore(1)
+
 # ── DB helper ────────────────────────────────────────────────────────────────
 def get_conn():
     return psycopg2.connect(DATABASE_URL)
@@ -70,7 +80,8 @@ def upload():
 
     file      = request.files["video"]
     video_id  = str(uuid.uuid4())
-    ext       = os.path.splitext(file.filename or ".mp4")[1] or ".mp4"
+    original_filename = file.filename or "video.mp4"
+    ext       = os.path.splitext(original_filename)[1] or ".mp4"
     obj_name  = f"{video_id}{ext}"
 
     ensure_bucket()
@@ -87,9 +98,9 @@ def upload():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO jobs (video_id, object_name, status, stage)
-                   VALUES (%s, %s, 'queued', 'Queued')""",
-                (video_id, obj_name),
+                """INSERT INTO jobs (video_id, object_name, filename, status, stage)
+                   VALUES (%s, %s, %s, 'queued', 'Queued')""",
+                (video_id, obj_name, original_filename),
             )
 
     return jsonify(video_id=video_id, object_name=obj_name), 201
@@ -111,8 +122,13 @@ def analyze(video_id):
             "object_name": job["object_name"],
         })
     except NoBrokersAvailable:
-        # Fallback: run inline in background thread (dev mode)
-        threading.Thread(target=_run_worker_inline, args=(video_id, job["object_name"]), daemon=True).start()
+        # Fallback: run inline in background thread (dev mode).
+        # Semaphore ensures only one pipeline runs at a time to avoid OOM.
+        threading.Thread(
+            target=_run_worker_inline_guarded,
+            args=(video_id, job["object_name"]),
+            daemon=True,
+        ).start()
 
     # Mark as running
     with get_conn() as conn:
@@ -129,7 +145,7 @@ def analyze(video_id):
 def status(video_id):
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT status, progress, stage, error, wandb_url FROM jobs WHERE video_id=%s", (video_id,))
+            cur.execute("SELECT status, progress, stage, error, wandb_url, filename FROM jobs WHERE video_id=%s", (video_id,))
             row = cur.fetchone()
     if not row:
         return jsonify(error="Not found"), 404
@@ -161,7 +177,19 @@ def video_url(video_id):
     return jsonify(url=url)
 
 
+# ── Upload size error handler ─────────────────────────────────────────────────
+@app.errorhandler(413)
+def request_entity_too_large(_):
+    return jsonify(error="File too large. Maximum upload size is 500 MB."), 413
+
+
 # ── Inline worker fallback (no Kafka) ────────────────────────────────────────
+def _run_worker_inline_guarded(video_id: str, object_name: str):
+    """Acquire the semaphore then delegate — queues analyses rather than running them in parallel."""
+    with _worker_semaphore:
+        _run_worker_inline(video_id, object_name)
+
+
 def _run_worker_inline(video_id: str, object_name: str):
     """Download video → run pipeline → store result (used when Kafka unavailable)."""
     import sys, tempfile, shutil

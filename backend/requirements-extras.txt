@@ -1,0 +1,23 @@
+# Extra dependencies for depth estimation and VLM coaching feedback.
+# Install these only if you set depth.enabled=true or vlm.enabled=true
+# in ml/ohp_form_pipeline/configs/default.yaml.
+#
+# Total size: ~520 MB (CPU wheels)
+#
+# Usage:
+#   pip install -r requirements.txt -r requirements-extras.txt
+
+# ── PyTorch (CPU-only build) ───────────────────────────────────────────────────
+# CPU wheel is ~220 MB vs ~2.4 GB for CUDA build.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.0+cpu
+torchvision==0.18.0+cpu
+
+# ── Transformers ───────────────────────────────────────────────────────────────
+# Required by Depth Anything V2 (depth.enabled=true) and Qwen2.5 VLM (vlm.enabled=true).
+transformers==4.41.2
+
+# ── LoRA adapter support ───────────────────────────────────────────────────────
+# Required for vlm.enabled=true (loads checkpoints/language_lora via peft).
+peft>=0.7
+einops>=0.7

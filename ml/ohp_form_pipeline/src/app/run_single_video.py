@@ -25,7 +25,7 @@ _PIPELINE_ROOT = os.path.dirname(
 if _PIPELINE_ROOT not in sys.path:
     sys.path.insert(0, _PIPELINE_ROOT)
 
-from src.io.video_loader import load_video_meta, load_all_frames
+from src.io.video_loader import load_video_meta, load_all_frames, iter_frames
 from src.io.json_writer import build_empty_artifact, write_clip_json
 from src.cv.pose_estimator import (
     PoseEstimator,
@@ -54,12 +54,6 @@ from src.unsupervised.cluster_naming import assign_clip_fault_flags
 from src.reasoning.rule_engine import load_rules, select_rules, format_coaching_feedback
 from src.reasoning.feedback_generator import VLMFeedbackGenerator
 from src.viz.annotated_video import write_annotated_video, draw_skeleton, draw_bar
-from src.viz.signal_plots import (
-    plot_trajectories,
-    plot_signal_dashboard,
-    plot_bilateral_symmetry,
-    plot_harmonic_wave_patterns,
-)
 from src.viz.report_generator import generate_text_report
 
 
@@ -95,11 +89,12 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
         max_height=cfg["pipeline"]["max_height"],
         frame_step=cfg["pipeline"]["frame_step"],
     )
+    n_frames = len(frames)
     print(
         f"      {meta.n_frames} frames @ {meta.fps:.1f} fps  ({meta.duration_sec:.2f}s)"
     )
 
-    artifact = build_empty_artifact(vid_id, video_path, meta.fps, len(frames))
+    artifact = build_empty_artifact(vid_id, video_path, meta.fps, n_frames)
 
     # ── Stage 2: Pose + Bar ──
     print("[2/8] Estimating pose + detecting bar ...")
@@ -193,11 +188,11 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     bars = _repair_bad_bar_frames(
         bars, bad_frame_mask, max_interp_gap=int(jitter_cfg.get("max_interp_gap", 4))
     )
-    artifact["n_frames"] = int(len(frames))
-    artifact["duration_sec"] = round(float(len(frames) / max(meta.fps, 1e-6)), 3)
+    artifact["n_frames"] = int(n_frames)
+    artifact["duration_sec"] = round(float(n_frames / max(meta.fps, 1e-6)), 3)
     jitter_info = {
         "enabled": True,
-        "original_count": int(len(frames)),
+        "original_count": int(n_frames),
         "bad_count": int(np.count_nonzero(bad_frame_mask)),
         "bad_frame_indices": [int(i) for i in np.where(bad_frame_mask)[0].tolist()],
         "max_jump_ratio": float(jitter_cfg.get("max_jump_ratio", 0.32)),
@@ -229,6 +224,7 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     _write_mediapipe_keypoints(
         poses, os.path.join(processed_root, f"{vid_id}_mediapipe_keypoints")
     )
+    del frames  # free ~500 MB — reloaded on-demand for Stage 8 output only
 
     # ── Stage 3: Depth ──
     depths = []
@@ -374,9 +370,9 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     artifact["phase_segments"] = phases_to_dicts(phases)
 
     # Phase label per original frame
-    phase_per_frame = ["unknown"] * len(frames)
+    phase_per_frame = ["unknown"] * n_frames
     for ph in phases:
-        for fi in range(ph.start_frame, min(ph.end_frame + 1, len(frames))):
+        for fi in range(ph.start_frame, min(ph.end_frame + 1, n_frames)):
             phase_per_frame[fi] = ph.phase_type
 
     # ── Stage 6: Feature engineering + wave analysis ──
@@ -434,10 +430,15 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
         rules,
         uncertainty=depth_feats["depth_enabled"],
     )
-    # VLM (if enabled)
+    # VLM (if enabled) — only sample key frames when actually needed
     vlm_cfg = cfg.get("vlm", {})
     vlm_gen = VLMFeedbackGenerator(vlm_cfg)
-    key_frames = _sample_key_frames(frames, n=vlm_cfg.get("num_key_frames", 4))
+    if vlm_cfg.get("enabled", False):
+        _vlm_frames = [f for _, f in iter_frames(video_path, max_height=cfg["pipeline"]["max_height"], frame_step=cfg["pipeline"]["frame_step"])]
+        key_frames = _sample_key_frames(_vlm_frames, n=vlm_cfg.get("num_key_frames", 4))
+        del _vlm_frames
+    else:
+        key_frames = []
     language = vlm_gen.generate(
         artifact, key_frames=key_frames, rule_based_fallback=rule_feedback
     )
@@ -449,16 +450,24 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     json_path = write_clip_json(artifact, json_out, vid_id)
     print(f"  JSON: {json_path}")
 
-    # Annotated video
+    # Annotated video — reload frames from disk only when needed
     if cfg["viz"]["save_annotated_video"]:
+        frames = [f for _, f in iter_frames(video_path, max_height=cfg["pipeline"]["max_height"], frame_step=cfg["pipeline"]["frame_step"])]
         vid_path = os.path.join(video_out, f"{vid_id}_annotated.mp4")
         write_annotated_video(
             frames, poses, bars, fault_flags, phase_per_frame, vid_path, meta.fps
         )
         print(f"  Annotated video: {vid_path}")
+        del frames
 
     # Plots
     if cfg["viz"]["save_plots"]:
+        from src.viz.signal_plots import (
+            plot_trajectories,
+            plot_signal_dashboard,
+            plot_bilateral_symmetry,
+            plot_harmonic_wave_patterns,
+        )
         plot_trajectories(
             artifact["trajectories"],
             artifact["phase_segments"],
@@ -529,9 +538,8 @@ def _write_pose_overlay_video(
     disp_poses = _make_visual_continuity_poses(poses, max_hold=max_hold)
     disp_bars = _make_visual_continuity_bars(bars, max_hold=max_hold)
     for frame, pose, bar in zip(frames, disp_poses, disp_bars):
-        annotated = draw_skeleton(
-            frame, pose, color=(0, 140, 255), radius=4, thickness=2
-        )
+        annotated = frame.copy()  # one copy; draw_skeleton/draw_bar work in-place
+        draw_skeleton(annotated, pose, color=(0, 140, 255), radius=4, thickness=2)
         for idx, pt in enumerate(pose.keypoints):
             if np.isnan(pt).any() or not pose.visible[idx]:
                 continue
@@ -545,7 +553,7 @@ def _write_pose_overlay_video(
                 1,
                 cv2.LINE_AA,
             )
-        annotated = draw_bar(annotated, bar)
+        draw_bar(annotated, bar)
         writer.write(annotated)
     writer.release()
 

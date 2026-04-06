@@ -22,7 +22,7 @@ x-common-env: &common-env
 
 services:
 
-  # ── Frontend (Vite) ───────────────────────────────────────────────────────
+  # ── Frontend (Vite) ──────────────────────────────────────────────────────────
   frontend:
     image: node:20-alpine
     container_name: liftlens-frontend
@@ -30,15 +30,19 @@ services:
     depends_on:
       - api
     working_dir: /app
+    # node_modules lives in a named volume so npm install only runs when
+    # package.json changes, not on every container restart.
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 3000"
     ports:
       - "3000:3000"
     environment:
       VITE_API_PROXY_TARGET: http://api:5050
+    mem_limit: 512m
     volumes:
       - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
 
-  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: liftlens-postgres
@@ -52,13 +56,14 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/migrations/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    mem_limit: 256m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U liftlens"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  # ── MinIO (object storage for raw videos + annotated outputs) ──────────────
+  # ── MinIO (object storage for raw videos + annotated outputs) ────────────────
   minio:
     image: quay.io/minio/minio:latest
     container_name: liftlens-minio
@@ -72,13 +77,14 @@ services:
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
+    mem_limit: 512m
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ── Flask API (also runs ML pipeline inline via background thread) ──────────
+  # ── Flask API (also runs ML pipeline inline via background thread) ────────────
   api:
     build:
       context: ./backend
@@ -95,9 +101,14 @@ services:
     environment:
       <<: *common-env
     command: ["python", "-m", "api.server"]
+    # ML pipeline peaks at ~1.5 GB; 3 GB ceiling leaves headroom for annotated
+    # video rendering without risking the host OOM-killer on a 16 GB laptop.
+    mem_limit: 3g
     volumes:
       - ./backend/api:/app/api
-      - ./ml/ohp_form_pipeline:/app/ml:ro
+      # Not read-only — pipeline writes processed artifacts to data/processed/
+      # and outputs/; :ro would block subdirectory volume mounts.
+      - ./ml/ohp_form_pipeline:/app/ml
       - ml_outputs:/app/ml/outputs
       # Cache HuggingFace models across container restarts (used if depth re-enabled)
       - hf_cache:/app/.cache/huggingface
@@ -107,3 +118,6 @@ volumes:
   minio_data:
   ml_outputs:
   hf_cache:
+  # Persists node_modules across frontend container restarts.
+  # Delete with: docker volume rm capstone_frontend_node_modules
+  frontend_node_modules:
