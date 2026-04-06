@@ -14,9 +14,34 @@ export default function UploadCard() {
   const inputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
 
+  const MAX_FILE_MB = 500
+  const MAX_DURATION_SEC = 90
+
   const handleFile = async (file: File) => {
     if (!file.type.startsWith('video/')) {
       setError('Please select a video file.')
+      setPhase('error')
+      return
+    }
+    if (file.size > MAX_FILE_MB * 1024 * 1024) {
+      setError(`File is too large (${(file.size / 1024 / 1024).toFixed(0)} MB). Maximum is ${MAX_FILE_MB} MB.`)
+      setPhase('error')
+      return
+    }
+    // Check video duration before uploading
+    const durationOk = await new Promise<boolean>(resolve => {
+      const url = URL.createObjectURL(file)
+      const vid = document.createElement('video')
+      vid.preload = 'metadata'
+      vid.onloadedmetadata = () => {
+        URL.revokeObjectURL(url)
+        resolve(vid.duration <= MAX_DURATION_SEC)
+      }
+      vid.onerror = () => { URL.revokeObjectURL(url); resolve(true) } // allow if can't read
+      vid.src = url
+    })
+    if (!durationOk) {
+      setError(`Video is too long. Maximum duration is ${MAX_DURATION_SEC}s. Please trim to a single OHP set.`)
       setPhase('error')
       return
     }
@@ -92,7 +117,7 @@ export default function UploadCard() {
                 </div>
                 <div className="text-center">
                   <p className="text-white font-semibold mb-1">Drop your video here</p>
-                  <p className="text-zinc-500 text-sm">MP4, MOV, AVI — back-view OHP</p>
+                  <p className="text-zinc-500 text-sm">MP4, MOV, AVI · back-view OHP · max 90s · max 500 MB</p>
                 </div>
                 <span className="text-xs text-zinc-600 bg-zinc-800 px-3 py-1.5 rounded-lg">Browse files</span>
               </>

@@ -184,6 +184,19 @@ def request_entity_too_large(_):
 
 
 # ── Inline worker fallback (no Kafka) ────────────────────────────────────────
+def _sanitize_for_json(obj):
+    """Recursively replace float NaN/Inf with None so json.dumps produces valid JSON.
+    PostgreSQL JSONB rejects bare NaN/Infinity tokens."""
+    import math
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_json(v) for v in obj]
+    return obj
+
+
 def _run_worker_inline_guarded(video_id: str, object_name: str):
     """Acquire the semaphore then delegate — queues analyses rather than running them in parallel."""
     with _worker_semaphore:
@@ -213,7 +226,7 @@ def _run_worker_inline(video_id: str, object_name: str):
         minio_client.fget_object(MINIO_BUCKET, object_name, tmp_path)
 
         _set("running", "Estimating pose", 30)
-        from src.app.run_single_video import run
+        from src.app.run_single_video import run, VideoValidationError
         out_dir = os.path.join(tmp, "out")
         os.makedirs(out_dir, exist_ok=True)
         artifact = run(tmp_path, ml_config, out_dir)
@@ -225,13 +238,16 @@ def _run_worker_inline(video_id: str, object_name: str):
                 cur.execute(
                     "INSERT INTO results (video_id, artifact) VALUES (%s, %s) "
                     "ON CONFLICT (video_id) DO UPDATE SET artifact=EXCLUDED.artifact",
-                    (video_id, json.dumps(artifact)),
+                    (video_id, json.dumps(_sanitize_for_json(artifact))),
                 )
                 wandb_url = artifact.get("wandb_url")
                 cur.execute(
                     "UPDATE jobs SET status='done', stage='Done', progress=100, wandb_url=%s WHERE video_id=%s",
                     (wandb_url, video_id),
                 )
+    except VideoValidationError as exc:
+        # User-facing validation failure — clear message, not a system error
+        _set("invalid", "Invalid video", 0, str(exc))
     except Exception as exc:
         _set("error", "Error", 0, str(exc))
     finally:

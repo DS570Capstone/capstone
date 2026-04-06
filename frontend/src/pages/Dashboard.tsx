@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useEffect } from 'react'
-import { Triangle, ArrowLeft, Loader, AlertCircle, ExternalLink, Play } from 'lucide-react'
+import { Triangle, ArrowLeft, Loader, AlertCircle, AlertTriangle, ExternalLink, Play } from 'lucide-react'
 import { useAnalysis } from '../hooks/useAnalysis'
 import QualityGauge from '../components/QualityGauge'
 import FaultFlags from '../components/FaultFlags'
@@ -110,15 +110,29 @@ export default function Dashboard() {
         )}
 
         {/* ── Error ── */}
-        {state.phase === 'error' && (
-          <div className="flex flex-col items-center justify-center py-24 gap-4">
-            <AlertCircle size={32} className="text-red-400" />
-            <p className="text-red-300 font-semibold">{state.message}</p>
-            <button onClick={() => start()} className="text-sm text-zinc-400 hover:text-white underline">
-              Retry
-            </button>
-          </div>
-        )}
+        {state.phase === 'error' && (() => {
+          // Validation messages contain specific cues; system errors are generic.
+          const isValidation = state.message?.includes('detected') ||
+            state.message?.includes('camera') ||
+            state.message?.includes('movement') ||
+            state.message?.includes('suitable')
+          return (
+            <div className="flex flex-col items-center justify-center py-24 gap-4 max-w-lg mx-auto text-center">
+              {isValidation
+                ? <AlertTriangle size={36} className="text-yellow-400" />
+                : <AlertCircle size={36} className="text-red-400" />}
+              <div>
+                <p className={`font-semibold text-lg mb-2 ${isValidation ? 'text-yellow-300' : 'text-red-300'}`}>
+                  {isValidation ? 'Video not suitable for analysis' : 'Analysis failed'}
+                </p>
+                <p className="text-zinc-400 text-sm leading-relaxed">{state.message}</p>
+              </div>
+              <button onClick={() => navigate('/')} className="mt-2 text-sm text-zinc-400 hover:text-white underline">
+                Upload a different video
+              </button>
+            </div>
+          )
+        })()}
 
         {/* ── Results ── */}
         {state.phase === 'done' && (() => {

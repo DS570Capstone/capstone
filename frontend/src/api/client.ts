@@ -52,7 +52,7 @@ export async function getVideoUrl(videoId: string): Promise<string> {
 export type JobStatus = {
   jobId: string
   videoId: string
-  status: 'queued' | 'running' | 'done' | 'error'
+  status: 'queued' | 'running' | 'done' | 'error' | 'invalid'
   progress: number        // 0–100
   stage: string
   error?: string

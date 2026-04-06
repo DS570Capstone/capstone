@@ -38,6 +38,9 @@ export function useAnalysis(videoId: string | null) {
           clearInterval(intervalRef.current!)
           const result = await getResults(status.videoId)
           setState({ phase: 'done', result, wandbUrl: status.wandbUrl, filename: status.filename })
+        } else if (status.status === 'invalid') {
+          clearInterval(intervalRef.current!)
+          setState({ phase: 'error', message: status.error || 'Video is not suitable for analysis.' })
         } else if (status.status === 'error') {
           clearInterval(intervalRef.current!)
           setState({ phase: 'error', message: status.error || 'Analysis failed' })

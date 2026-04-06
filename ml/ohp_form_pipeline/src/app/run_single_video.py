@@ -80,6 +80,17 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     meta = load_video_meta(video_path)
     vid_id = meta.video_id
 
+    # ── Duration guard ───────────────────────────────────────────────────────
+    # Reject before loading any frames — avoids OOM on long videos.
+    # A typical OHP set is 5-30s; 90s is a very generous ceiling.
+    _MAX_DURATION_SEC = 90.0
+    if meta.duration_sec > _MAX_DURATION_SEC:
+        raise VideoValidationError(
+            f"Video is {meta.duration_sec:.0f}s long. "
+            f"Maximum supported duration is {_MAX_DURATION_SEC:.0f}s. "
+            "Please trim your video to a single OHP set before uploading."
+        )
+
     # Always persist verification artifacts in processed/ for quick visual QA.
     processed_root = os.path.join(root_cfg, "data", "processed", vid_id)
     os.makedirs(processed_root, exist_ok=True)
@@ -225,6 +236,12 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
         poses, os.path.join(processed_root, f"{vid_id}_mediapipe_keypoints")
     )
     del frames  # free ~500 MB — reloaded on-demand for Stage 8 output only
+
+    # ── Video validation ──────────────────────────────────────────────────────
+    # Runs on pose/bar data from Stage 2 — no extra compute cost.
+    # Raises VideoValidationError with a user-friendly message if the video is
+    # unsuitable (no person, no movement, wrong camera angle).
+    _validate_video(poses, bars, meta.fps)
 
     # ── Stage 3: Depth ──
     depths = []
@@ -1405,6 +1422,90 @@ def _planar_twist(
     hp3 = np.concatenate([hp, np.zeros((len(hp), 1), dtype=hp.dtype)], axis=1)
     cross = np.cross(sh3, hp3)
     return np.linalg.norm(cross, axis=1)
+
+
+class VideoValidationError(ValueError):
+    """Raised when a video fails pre-analysis validation."""
+    pass
+
+
+def _validate_video(
+    poses: list,
+    bars: list,
+    fps: float,
+) -> None:
+    """
+    Three lightweight checks on data already computed in Stage 2.
+    Raises VideoValidationError with a user-friendly message if any check fails.
+    No new models — pure logic on pose keypoints and bar positions.
+    """
+    n = len(poses)
+    if n == 0:
+        raise VideoValidationError("No frames could be decoded from this video.")
+
+    # ── Critical keypoints used for OHP analysis (back-view) ──────────────────
+    _CRITICAL = [
+        KP["left_shoulder"], KP["right_shoulder"],
+        KP["left_elbow"], KP["right_elbow"],
+        KP["left_wrist"], KP["right_wrist"],
+        KP["left_hip"], KP["right_hip"],
+    ]
+
+    # ── Check 1: Is a person visible? ─────────────────────────────────────────
+    # Count frames where at least 4 of the 8 critical keypoints are visible.
+    # Threshold: 30% of frames must have a detectable person.
+    frames_with_person = sum(
+        1 for p in poses
+        if sum(1 for idx in _CRITICAL if p.visible[idx]) >= 4
+    )
+    person_ratio = frames_with_person / n
+    if person_ratio < 0.30:
+        raise VideoValidationError(
+            f"No person detected in {100 * (1 - person_ratio):.0f}% of frames "
+            f"({frames_with_person}/{n} frames had a visible person). "
+            "Make sure the video shows a person from the back and the full body is in frame."
+        )
+
+    # ── Check 2: Is there overhead press movement? ────────────────────────────
+    # The bar (inferred from wrists) must travel vertically by at least 15% of
+    # the frame height to constitute a meaningful press. A static video or a
+    # squat/deadlift will have near-zero vertical bar travel.
+    bar_cy = np.array([b.center_y for b in bars])
+    valid_bar = bar_cy[~np.isnan(bar_cy)]
+    if len(valid_bar) < 6:
+        raise VideoValidationError(
+            "Bar position could not be tracked in enough frames. "
+            "Make sure both wrists are visible throughout the lift."
+        )
+    bar_travel_ratio = (np.max(valid_bar) - np.min(valid_bar)) / max(
+        np.nanmax([p.keypoints[:, 1].max() for p in poses
+                   if not np.all(np.isnan(p.keypoints))]),
+        1.0,
+    )
+    if bar_travel_ratio < 0.08:
+        raise VideoValidationError(
+            f"No overhead press movement detected (bar vertical travel = "
+            f"{bar_travel_ratio * 100:.1f}% of frame height, expected ≥ 8%). "
+            "Upload a video of an overhead press, not a static hold or different exercise."
+        )
+
+    # ── Check 3: Is this a back-view camera angle? ────────────────────────────
+    # In a back-view video the subject faces away from the camera:
+    #   - Both shoulders should be visible most of the time.
+    #   - Nose should be invisible most of the time (face away from camera).
+    # If nose is consistently MORE visible than shoulders, it's likely front-view.
+    nose_vis = np.mean([float(p.visible[KP["nose"]]) for p in poses])
+    ls_vis = np.mean([float(p.visible[KP["left_shoulder"]]) for p in poses])
+    rs_vis = np.mean([float(p.visible[KP["right_shoulder"]]) for p in poses])
+    shoulder_vis = (ls_vis + rs_vis) / 2.0
+
+    if nose_vis > 0.5 and nose_vis > shoulder_vis * 1.5:
+        raise VideoValidationError(
+            f"This appears to be a front-view video (nose visible in "
+            f"{nose_vis * 100:.0f}% of frames). "
+            "LiftLens requires a back-view camera angle — position the camera "
+            "behind the lifter."
+        )
 
 
 if __name__ == "__main__":
