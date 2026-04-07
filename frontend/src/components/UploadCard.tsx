@@ -1,6 +1,6 @@
 import { useState, useRef, DragEvent } from 'react'
 import { Upload, Loader, CheckCircle, Triangle, History, AlertTriangle } from 'lucide-react'
-import { uploadVideo, checkDuplicate } from '../api/client'
+import { uploadVideo, checkDuplicate, triggerAnalysis } from '../api/client'
 import { useNavigate } from 'react-router-dom'
 
 type Phase = 'idle' | 'hashing' | 'uploading' | 'done' | 'error'
@@ -143,7 +143,12 @@ export default function UploadCard() {
                   View result
                 </button>
                 <button
-                  onClick={() => setDuplicate(null)}
+                  onClick={async () => {
+                    const id = duplicate.videoId
+                    setDuplicate(null)
+                    try { await triggerAnalysis(id) } catch { /* ignore — dashboard will poll */ }
+                    navigate(`/dashboard/${id}`)
+                  }}
                   className="text-xs text-zinc-400 hover:text-white px-3 py-1.5 rounded-lg transition-colors"
                 >
                   Re-analyse

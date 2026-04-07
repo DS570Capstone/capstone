@@ -84,3 +84,8 @@ minio_data/
 # ── Logs ──────────────────────────────────────────────────────────────────────
 logs/
 *.log
+
+
+VideoPose3D-main/
+
+VideoPose3D-main.zip

@@ -160,6 +160,34 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     if pose_cfg.get("smooth_method", "savgol") == "savgol":
         poses = _restore_pose_long_gaps(poses, poses_pre, pose_long_gap_mask)
 
+    # ── Stage 2b: VP3D temporal 3D lifting ───────────────────────────────────
+    vp3d_cfg = cfg.get("vp3d", {})
+    if vp3d_cfg.get("enabled", False):
+        model_path = os.path.join(root_cfg, vp3d_cfg.get("model_path", "models/pretrained_h36m_detectron_coco.bin"))
+        if not os.path.exists(model_path):
+            print(
+                f"[2b] VP3D skipped — model not found at {model_path}\n"
+                "     Download with:\n"
+                "       mkdir -p models\n"
+                "       curl -L -o models/pretrained_h36m_detectron_coco.bin \\\n"
+                "         https://dl.fbaipublicfiles.com/video-pose-3d/pretrained_h36m_detectron_coco.bin"
+            )
+        else:
+            print("[2b] VP3D: lifting 2D → 3D via temporal TCN ...")
+            from src.cv.vp3d_lifter import VP3DLifter, compute_processed_frame_size
+            proc_w, proc_h = compute_processed_frame_size(
+                meta.width, meta.height, cfg["pipeline"]["max_height"]
+            )
+            lifter = VP3DLifter(
+                model_path=model_path,
+                filter_widths=vp3d_cfg.get("filter_widths", [3, 3, 3, 3, 3]),
+                channels=vp3d_cfg.get("channels", 1024),
+                dropout=vp3d_cfg.get("dropout", 0.25),
+                device="cuda" if _has_cuda() else "cpu",
+            )
+            poses = lifter.lift_poses(poses, proc_w, proc_h)
+            print(f"      VP3D world_landmarks updated for {len(poses)} frames")
+
     bar_cfg = cfg["bar"]
     bar_detector = BarDetector(
         backend=bar_cfg["backend"],
@@ -394,8 +422,9 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
 
     # ── Stage 6: Feature engineering + wave analysis ──
     print("[6/8] Computing features and wave analysis ...")
+    bar_cy_scaled = bar_cy / (scale + 1e-8)
     bar_feats = compute_bar_features(
-        bar_cx, bar_cy, bar_tilt, meta.fps, scale, midline_x
+        bar_cx, bar_cy_scaled, bar_tilt, meta.fps, scale, midline_x
     )
     bilateral_feats = compute_bilateral_features(
         kp_y("left_wrist"),
@@ -423,7 +452,11 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
             "bar_forward_drift_depth"
         ]
 
-    wave_feats = compute_wave_features(bar_cy_smooth, meta.fps, phases, scale)
+    # Normalize bar_cy by body scale so energy/power outputs are in
+    # shoulder-width units (dimensionless) instead of raw pixels.
+    # Without this, Work+/Work- are in px²/s² and reach 200,000+.
+    bar_cy_norm = bar_cy_smooth / (scale + 1e-8)
+    wave_feats = compute_wave_features(bar_cy_norm, meta.fps, phases, scale)
     # Inject symmetry into quality
     wave_feats["quality"]["symmetry"] = bilateral_feats.get("symmetry_score", 0.0)
     artifact["wave_features"] = wave_feats

@@ -3,7 +3,7 @@ pipeline:
   camera_position: "BACK"
   max_height: 480      # reduced from 720 — cuts per-frame RAM ~55%, faster pose estimation
   max_frames: 64       # reduced from 128 — halves trajectory resampling cost; sufficient for rep analysis
-  frame_step: 2        # process every 2nd frame — halves pose estimation time on CPU
+  frame_step: 1        # process every 2nd frame — halves pose estimation time on CPU
   cache_dir: "data/cache"
   output_dir: "outputs"
 
@@ -95,6 +95,17 @@ vlm:
   num_key_frames: 4
   adapter_path: "checkpoints/vision_adapter.pt"
   lora_path: "checkpoints/language_lora"
+
+vp3d:
+  enabled: true          # Set true once model is downloaded (see below)
+  # Download the pre-trained model:
+  #   mkdir -p models
+  #   curl -L -o models/pretrained_h36m_detectron_coco.bin \
+  #     https://dl.fbaipublicfiles.com/video-pose-3d/pretrained_h36m_detectron_coco.bin
+  model_path: "models/pretrained_h36m_detectron_coco.bin"
+  filter_widths: [3, 3, 3, 3, 3]   # receptive field = 243 frames
+  channels: 1024
+  dropout: 0.25
 
 viz:
   save_annotated_video: true
