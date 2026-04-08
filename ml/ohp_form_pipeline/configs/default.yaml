@@ -7,35 +7,6 @@ pipeline:
   cache_dir: "data/cache"
   output_dir: "outputs"
 
-pose:
-  backend: "disabled" # pose estimation removed
-  confidence_threshold: 0.5
-  smooth_window: 11 # Savitzky-Golay window size
-  smooth_poly: 3
-  smooth_method: "savgol" # "none" | "savgol" | "one_euro"
-  one_euro_min_cutoff: 1.0
-  one_euro_beta: 0.02
-  one_euro_d_cutoff: 1.0
-  one_euro_min_visibility: 0.5
-  one_euro_max_jump_px: 60.0
-  one_euro_max_interp_gap: 8
-
-bar:
-  backend: "wrist_heuristic" # "yolo" | "wrist_heuristic"
-  yolo_weights: "models/bar_detector.pt"
-  wrist_span_scale: 0.5 # fraction of wrist-to-wrist span as bar half-width
-  min_confidence: 0.3
-
-depth:
-  enabled:
-    false # disabled for CPU — would trigger ~400 MB HuggingFace download
-    # and run at ~10s/frame on CPU. Set true only on GPU.
-  backend: "depth_anything_v2" # "depth_anything_v2" | "depth_anything_v1" | "midas"
-  model_size: "small" # "small" | "base" | "large"
-  model_id: "depth-anything/Depth-Anything-V2-Small-hf"
-  cache_depth: true
-  colorize_previews: true
-
 signals:
   resample_length: 64 # match max_frames — was 128 (upsampling sparse data adds noise)
   smooth_window: 7
