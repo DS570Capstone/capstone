@@ -1,7 +1,7 @@
-"""VLM-based feedback generator — Qwen2.5-VL-0.5B with ExerciseAware adapter."""
+"""VLM-based feedback generator — Qwen3-VL with ExerciseAware adapter."""
+
 from __future__ import annotations
 
-import base64
 import os
 from typing import Optional
 import numpy as np
@@ -27,15 +27,8 @@ Rules:
 - Consider the harmonic quality of the movement — smooth, rhythmic reps indicate good motor control"""
 
 
-def _encode_frame(bgr_frame: np.ndarray) -> str:
-    """Encode BGR frame as base64 JPEG string."""
-    import cv2
-    _, buf = cv2.imencode(".jpg", bgr_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    return base64.b64encode(buf.tobytes()).decode("utf-8")
-
-
-def _build_prompt(artifact: dict, frames: Optional[list[np.ndarray]] = None) -> list[dict]:
-    """Build Qwen2.5-VL style message list."""
+def _build_prompt(artifact: dict, num_images: int = 0) -> list[dict]:
+    """Build Qwen3-VL style message list with image placeholders."""
     fault_flags = artifact.get("fault_flags", {})
     active_faults = [k for k, v in fault_flags.items() if v]
     quality = artifact.get("wave_features", {}).get("quality", {})
@@ -65,25 +58,19 @@ def _build_prompt(artifact: dict, frames: Optional[list[np.ndarray]] = None) -> 
             f"Torso depth shift: {df.get('torso_depth_shift', 0):.3f}\n"
         )
 
-    content = []
-    if frames:
-        for frame in frames[:4]:
-            content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{_encode_frame(frame)}"
-                },
-            })
+    content = [{"type": "image"} for _ in range(min(max(num_images, 0), 4))]
 
     content.append({"type": "text", "text": metrics_text})
-    content.append({
-        "type": "text",
-        "text": (
-            "Based on the above data, provide specific coaching feedback for this OHP rep. "
-            "Consider the harmonic quality of the movement — does the lifter maintain smooth, "
-            "rhythmic control throughout the press?"
-        ),
-    })
+    content.append(
+        {
+            "type": "text",
+            "text": (
+                "Based on the above data, provide specific coaching feedback for this OHP rep. "
+                "Consider the harmonic quality of the movement — does the lifter maintain smooth, "
+                "rhythmic control throughout the press?"
+            ),
+        }
+    )
 
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -93,7 +80,7 @@ def _build_prompt(artifact: dict, frames: Optional[list[np.ndarray]] = None) -> 
 
 class VLMFeedbackGenerator:
     """
-    Qwen2.5-VL-0.5B with ExerciseAware adapter + LoRA fine-tuning.
+    Qwen3-VL with ExerciseAware adapter + LoRA fine-tuning.
     Falls back to rule-based output if VLM not available.
     """
 
@@ -108,18 +95,20 @@ class VLMFeedbackGenerator:
             return
         try:
             import torch
-            model_id = self.config.get("model_id", "Qwen/Qwen2.5-0.5B-Instruct")
+
+            model_id = self.config.get("model_id", "Qwen/Qwen3-VL-2B-Thinking")
             device = self.config.get("device", "cpu")
             if device == "cuda" and not torch.cuda.is_available():
                 device = "cpu"
             print(f"[VLM] Loading {model_id} ...")
 
-            from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+            from transformers import AutoModelForImageTextToText, AutoProcessor
 
             self._processor = AutoProcessor.from_pretrained(
-                model_id, trust_remote_code=True,
+                model_id,
+                trust_remote_code=True,
             )
-            self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            self._model = AutoModelForImageTextToText.from_pretrained(
                 model_id,
                 trust_remote_code=True,
                 torch_dtype=torch.float16 if device == "cuda" else torch.float32,
@@ -129,6 +118,7 @@ class VLMFeedbackGenerator:
             lora_path = self.config.get("lora_path")
             if lora_path and os.path.isdir(lora_path):
                 from peft import PeftModel
+
                 self._model = PeftModel.from_pretrained(self._model, lora_path)
                 print(f"[VLM] LoRA weights loaded from {lora_path}")
 
@@ -160,17 +150,19 @@ class VLMFeedbackGenerator:
         from PIL import Image
         import cv2
 
-        messages = _build_prompt(artifact, key_frames)
-        text = self._processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True,
-        )
-
-        # Convert frames to PIL images for the processor
+        # Convert frames to PIL images for the processor and include matching image placeholders.
         pil_images = []
         if key_frames:
             for frame in key_frames[:4]:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 pil_images.append(Image.fromarray(rgb))
+
+        messages = _build_prompt(artifact, num_images=len(pil_images))
+        text = self._processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
 
         inputs = self._processor(
             text=[text],
@@ -187,7 +179,8 @@ class VLMFeedbackGenerator:
                 do_sample=True,
             )
         generated = self._processor.batch_decode(
-            output_ids[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True,
+            output_ids[:, inputs["input_ids"].shape[1] :],
+            skip_special_tokens=True,
         )[0].strip()
 
         return {

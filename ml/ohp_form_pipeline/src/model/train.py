@@ -1,17 +1,16 @@
 """
-Training pipeline — Qwen2.5-VL + ExerciseAwareAdapter vs. Baseline MLP.
+Training pipeline — Qwen3-VL + ExerciseAwareAdapter vs. Baseline MLP.
 
 Two independent model families are trained and compared:
 
   Model A  — Qwen-VL + Adapter:
     Stage 1: ExerciseAwareAdapter (pose+harmonic cross-attention) with quality,
              fault, and expert prediction heads.
-    Stage 2: LoRA fine-tune of Qwen2.5-VL-0.5B language model for coaching text.
+    Stage 2: LoRA fine-tune of Qwen3-VL language model for coaching text.
 
-  Model B  — Baseline (NO Qwen-VL):
-    A lightweight MLP that ingests the same structured features (pose, harmonic,
-    depth, wave-quality scalars) and predicts quality, faults, and expert label.
-    No vision encoder, no language generation.
+    Model B  — Qwen3-VL Plain:
+        Qwen/Qwen3-VL-2B-Thinking without the ExerciseAware adapter.
+        Used as the plain-model comparison against Model A.
 
 Both pipelines log to Weights & Biases (wandb) with a shared comparison run
 at the end that reports:
@@ -23,6 +22,7 @@ Usage:
     cd ml/ohp_form_pipeline
     python -m src.model.train --stage all --epochs 30
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,6 +31,7 @@ import math
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -39,18 +40,33 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, Subset
 from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.metrics import (
-    mean_absolute_error, mean_squared_error, r2_score,
-    accuracy_score, precision_score, recall_score, f1_score,
-    roc_auc_score, classification_report,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    classification_report,
 )
 from tqdm import tqdm
 
-PIPELINE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PIPELINE_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 sys.path.insert(0, PIPELINE_ROOT)
 
-import weave
+weave = None
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except Exception:
+
+    def load_dotenv(*args, **kwargs):
+        return False
+
+
 # Walk up to find the .env at project root (Capstone_new/)
 _env_path = os.path.join(PIPELINE_ROOT, ".env")
 if not os.path.exists(_env_path):
@@ -61,16 +77,28 @@ load_dotenv(_env_path)
 _hf_token = os.environ.get("HF_TOKEN", "")
 if _hf_token:
     from huggingface_hub import login as hf_login
+
     hf_login(token=_hf_token, add_to_git_credential=False)
 
-# Initialize Weave for trace logging
-weave.init('jnolas77-arizona-state-university/capstone')
+# Initialize Weave for trace logging only when explicitly enabled.
+if os.environ.get("ENABLE_WEAVE", "0") == "1":
+    try:
+        import weave as _weave
+
+        _weave.init("jnolas77-arizona-state-university/capstone")
+        weave = _weave
+    except Exception as e:
+        print(f"[warn] Weave init failed: {e}")
 
 FAULT_NAMES = [
-    "left_right_lockout_asymmetry", "bar_tilt_instability",
-    "lateral_bar_drift", "uneven_press_timing",
-    "compensatory_lateral_shift", "trunk_shift_under_load",
-    "hip_shift_compensation", "unstable_lockout",
+    "left_right_lockout_asymmetry",
+    "bar_tilt_instability",
+    "lateral_bar_drift",
+    "uneven_press_timing",
+    "compensatory_lateral_shift",
+    "trunk_shift_under_load",
+    "hip_shift_compensation",
+    "unstable_lockout",
     "forward_bar_drift_depth_proxy",
 ]
 NUM_FAULTS = len(FAULT_NAMES)
@@ -78,12 +106,15 @@ NUM_FAULTS = len(FAULT_NAMES)
 # Quality sub-score keys used as extra scalar features
 QUALITY_KEYS = ["smoothness", "control", "efficiency", "consistency", "symmetry"]
 DEPTH_KEYS = [
-    "bar_forward_drift_depth", "bar_depth_asymmetry",
-    "torso_depth_shift", "subject_depth_stability",
+    "bar_forward_drift_depth",
+    "bar_depth_asymmetry",
+    "torso_depth_shift",
+    "subject_depth_stability",
 ]
 
 
 # ── wandb helpers ────────────────────────────────────────────────────────────
+
 
 def _init_wandb(run_name: str, config: dict, tags: list[str] | None = None):
     import wandb
@@ -99,7 +130,34 @@ def _init_wandb(run_name: str, config: dict, tags: list[str] | None = None):
     )
 
 
+class _StreamTee:
+    """Mirror stdout/stderr to console and a log file."""
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for stream in self._streams:
+            stream.write(data)
+            stream.flush()
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+
+def _enable_txt_logging(log_path: str):
+    log_dir = os.path.dirname(log_path)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    fh = open(log_path, "w", encoding="utf-8")
+    sys.stdout = _StreamTee(sys.__stdout__, fh)
+    sys.stderr = _StreamTee(sys.__stderr__, fh)
+    return fh
+
+
 # ── Dataset ──────────────────────────────────────────────────────────────────
+
 
 class OHPDataset(Dataset):
     """Unified dataset that loads every useful signal from batch_outputs.
@@ -151,14 +209,17 @@ class OHPDataset(Dataset):
             kp_data = json.load(f)
 
         # ── pose features (B, T, 85) ──
-        from src.model.exercise_vision_adapter import build_harmonic_signals_from_artifact
+        from src.model.exercise_vision_adapter import (
+            build_harmonic_signals_from_artifact,
+        )
         from src.cv.pose_estimator import KEYPOINT_NAMES
 
         n_frames = len(kp_data)
         pose_features = np.zeros((self.max_frames, 85), dtype=np.float32)
         if n_frames > 0:
-            indices = np.linspace(0, n_frames - 1,
-                                  min(self.max_frames, n_frames), dtype=int)
+            indices = np.linspace(
+                0, n_frames - 1, min(self.max_frames, n_frames), dtype=int
+            )
             for i, fi in enumerate(indices):
                 kps = kp_data[fi]["keypoints"]
                 kp_arr = []
@@ -167,8 +228,14 @@ class OHPDataset(Dataset):
                     x = kp["x"] if kp["x"] is not None else 0.0
                     y = kp["y"] if kp["y"] is not None else 0.0
                     kp_arr.extend([x / 720.0, y / 720.0])
-                feat = kp_arr + [0.0] * 6 + [0.0] * 6 + [0.0, 0.0, 0.0, 1.0] + [0.0, 0.0, 0.0]
-                pose_features[i, :len(feat)] = feat[:85]
+                feat = (
+                    kp_arr
+                    + [0.0] * 6
+                    + [0.0] * 6
+                    + [0.0, 0.0, 0.0, 1.0]
+                    + [0.0, 0.0, 0.0]
+                )
+                pose_features[i, : len(feat)] = feat[:85]
 
         # ── harmonic signals (4, signal_len) ──
         harmonic = build_harmonic_signals_from_artifact(artifact, self.signal_len)
@@ -188,18 +255,19 @@ class OHPDataset(Dataset):
 
         fault_flags = artifact.get("fault_flags", {})
         fault_labels = np.array(
-            [float(fault_flags.get(n, False)) for n in FAULT_NAMES], dtype=np.float32,
+            [float(fault_flags.get(n, False)) for n in FAULT_NAMES],
+            dtype=np.float32,
         )
 
         expert = float(artifact.get("expert", False))
 
         return {
-            "pose_features":   torch.from_numpy(pose_features),
+            "pose_features": torch.from_numpy(pose_features),
             "harmonic_signals": torch.from_numpy(harmonic),
             "scalar_features": torch.from_numpy(scalar_features),
-            "quality_label":   torch.tensor(quality_score, dtype=torch.float32),
-            "fault_labels":    torch.from_numpy(fault_labels),
-            "expert_label":    torch.tensor(expert, dtype=torch.float32),
+            "quality_label": torch.tensor(quality_score, dtype=torch.float32),
+            "fault_labels": torch.from_numpy(fault_labels),
+            "expert_label": torch.tensor(expert, dtype=torch.float32),
         }
 
 
@@ -213,10 +281,14 @@ def make_splits(dataset: OHPDataset, val_ratio: float = 0.2, seed: int = 42):
 
 # ── Evaluation helpers ───────────────────────────────────────────────────────
 
+
 def evaluate_predictions(
-    q_preds: np.ndarray, q_labels: np.ndarray,
-    f_preds: np.ndarray, f_labels: np.ndarray,
-    e_preds: np.ndarray, e_labels: np.ndarray,
+    q_preds: np.ndarray,
+    q_labels: np.ndarray,
+    f_preds: np.ndarray,
+    f_labels: np.ndarray,
+    e_preds: np.ndarray,
+    e_labels: np.ndarray,
 ) -> dict:
     """Compute all comparison metrics. Returns flat dict for wandb logging."""
     m = {}
@@ -231,11 +303,14 @@ def evaluate_predictions(
     m["fault/accuracy"] = accuracy_score(f_labels.ravel(), f_pred_bin.ravel())
     for avg in ("macro", "weighted"):
         m[f"fault/precision_{avg}"] = precision_score(
-            f_labels, f_pred_bin, average=avg, zero_division=0)
+            f_labels, f_pred_bin, average=avg, zero_division=0
+        )
         m[f"fault/recall_{avg}"] = recall_score(
-            f_labels, f_pred_bin, average=avg, zero_division=0)
+            f_labels, f_pred_bin, average=avg, zero_division=0
+        )
         m[f"fault/f1_{avg}"] = f1_score(
-            f_labels, f_pred_bin, average=avg, zero_division=0)
+            f_labels, f_pred_bin, average=avg, zero_division=0
+        )
 
     # Per-fault F1
     per_fault_f1 = f1_score(f_labels, f_pred_bin, average=None, zero_division=0)
@@ -260,6 +335,7 @@ def evaluate_predictions(
 # MODEL A — Qwen-VL + ExerciseAwareAdapter
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 class VisionAdapterTrainer:
     """Train the ExerciseAwareAdapter + quality / fault / expert heads."""
 
@@ -268,29 +344,39 @@ class VisionAdapterTrainer:
 
         self.device = (
             torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            if device == "auto" else torch.device(device)
+            if device == "auto"
+            else torch.device(device)
         )
         self.d_model = d_model
         self.adapter = ExerciseAwareAdapter(d_model=d_model).to(self.device)
 
         self.quality_head = nn.Sequential(
-            nn.Linear(d_model, 256), nn.GELU(), nn.Dropout(0.1),
-            nn.Linear(256, 1), nn.Sigmoid(),
+            nn.Linear(d_model, 256),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(256, 1),
+            nn.Sigmoid(),
         ).to(self.device)
         self.fault_head = nn.Sequential(
-            nn.Linear(d_model, 256), nn.GELU(), nn.Dropout(0.1),
-            nn.Linear(256, NUM_FAULTS), nn.Sigmoid(),
+            nn.Linear(d_model, 256),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(256, NUM_FAULTS),
+            nn.Sigmoid(),
         ).to(self.device)
         self.expert_head = nn.Sequential(
-            nn.Linear(d_model, 128), nn.GELU(), nn.Dropout(0.1),
-            nn.Linear(128, 1), nn.Sigmoid(),
+            nn.Linear(d_model, 128),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(128, 1),
+            nn.Sigmoid(),
         ).to(self.device)
 
         params = (
-            list(self.adapter.parameters()) +
-            list(self.quality_head.parameters()) +
-            list(self.fault_head.parameters()) +
-            list(self.expert_head.parameters())
+            list(self.adapter.parameters())
+            + list(self.quality_head.parameters())
+            + list(self.fault_head.parameters())
+            + list(self.expert_head.parameters())
         )
         self.optimizer = torch.optim.AdamW(params, lr=lr, weight_decay=0.01)
         self.quality_loss_fn = nn.MSELoss()
@@ -298,10 +384,14 @@ class VisionAdapterTrainer:
         self.expert_loss_fn = nn.BCELoss()
 
         n_params = self.adapter.num_trainable_params
-        n_heads = sum(p.numel() for p in self.quality_head.parameters()) + \
-                  sum(p.numel() for p in self.fault_head.parameters()) + \
-                  sum(p.numel() for p in self.expert_head.parameters())
-        print(f"[Model A] Adapter: {n_params:,} params  |  Heads: {n_heads:,} params  |  Device: {self.device}")
+        n_heads = (
+            sum(p.numel() for p in self.quality_head.parameters())
+            + sum(p.numel() for p in self.fault_head.parameters())
+            + sum(p.numel() for p in self.expert_head.parameters())
+        )
+        print(
+            f"[Model A] Adapter: {n_params:,} params  |  Heads: {n_heads:,} params  |  Device: {self.device}"
+        )
 
     def _forward(self, batch):
         pose = batch["pose_features"].to(self.device)
@@ -309,10 +399,10 @@ class VisionAdapterTrainer:
         B = pose.shape[0]
         dummy_visual = torch.randn(B, 16, self.d_model, device=self.device)
         fused = self.adapter(dummy_visual, pose, harm)
-        pooled = fused.mean(dim=1)                     # (B, D)
+        pooled = fused.mean(dim=1)  # (B, D)
         q_pred = self.quality_head(pooled).squeeze(-1)  # (B,)
-        f_pred = self.fault_head(pooled)                # (B, 9)
-        e_pred = self.expert_head(pooled).squeeze(-1)   # (B,)
+        f_pred = self.fault_head(pooled)  # (B, 9)
+        e_pred = self.expert_head(pooled).squeeze(-1)  # (B,)
         return q_pred, f_pred, e_pred
 
     def _run_epoch(self, loader: DataLoader, train: bool = True):
@@ -361,7 +451,9 @@ class VisionAdapterTrainer:
         e_preds = np.concatenate(e_all)
         e_labels = np.concatenate(el_all)
 
-        metrics = evaluate_predictions(q_preds, q_labels, f_preds, f_labels, e_preds, e_labels)
+        metrics = evaluate_predictions(
+            q_preds, q_labels, f_preds, f_labels, e_preds, e_labels
+        )
         metrics["loss"] = total_loss / max(n, 1)
         metrics["adapter_gate"] = float(torch.sigmoid(self.adapter.gate).item())
         return metrics, (q_preds, q_labels, f_preds, f_labels, e_preds, e_labels)
@@ -374,18 +466,22 @@ class VisionAdapterTrainer:
 
     def save(self, path: str):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        torch.save({
-            "adapter": self.adapter.state_dict(),
-            "quality_head": self.quality_head.state_dict(),
-            "fault_head": self.fault_head.state_dict(),
-            "expert_head": self.expert_head.state_dict(),
-        }, path)
+        torch.save(
+            {
+                "adapter": self.adapter.state_dict(),
+                "quality_head": self.quality_head.state_dict(),
+                "fault_head": self.fault_head.state_dict(),
+                "expert_head": self.expert_head.state_dict(),
+            },
+            path,
+        )
         print(f"Saved adapter checkpoint -> {path}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # MODEL B — Baseline MLP (NO Qwen-VL)
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 class BaselineMLP(nn.Module):
     """Pure MLP on flattened structured features — no vision encoder.
@@ -397,27 +493,51 @@ class BaselineMLP(nn.Module):
       Total = 1201
     """
 
-    def __init__(self, pose_dim: int = 680, harm_dim: int = 512,
-                 scalar_dim: int = 9, hidden: int = 512, dropout: float = 0.2):
+    def __init__(
+        self,
+        pose_dim: int = 680,
+        harm_dim: int = 512,
+        scalar_dim: int = 9,
+        hidden: int = 512,
+        dropout: float = 0.2,
+    ):
         super().__init__()
         in_dim = pose_dim + harm_dim + scalar_dim
         self.encoder = nn.Sequential(
-            nn.Linear(in_dim, hidden), nn.LayerNorm(hidden), nn.GELU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden), nn.LayerNorm(hidden), nn.GELU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden // 2), nn.LayerNorm(hidden // 2), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(in_dim, hidden),
+            nn.LayerNorm(hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden),
+            nn.LayerNorm(hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden // 2),
+            nn.LayerNorm(hidden // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
         )
         h2 = hidden // 2
-        self.quality_head = nn.Sequential(nn.Linear(h2, 64), nn.GELU(), nn.Linear(64, 1), nn.Sigmoid())
-        self.fault_head = nn.Sequential(nn.Linear(h2, 128), nn.GELU(), nn.Linear(128, NUM_FAULTS), nn.Sigmoid())
-        self.expert_head = nn.Sequential(nn.Linear(h2, 64), nn.GELU(), nn.Linear(64, 1), nn.Sigmoid())
+        self.quality_head = nn.Sequential(
+            nn.Linear(h2, 64), nn.GELU(), nn.Linear(64, 1), nn.Sigmoid()
+        )
+        self.fault_head = nn.Sequential(
+            nn.Linear(h2, 128), nn.GELU(), nn.Linear(128, NUM_FAULTS), nn.Sigmoid()
+        )
+        self.expert_head = nn.Sequential(
+            nn.Linear(h2, 64), nn.GELU(), nn.Linear(64, 1), nn.Sigmoid()
+        )
 
     def forward(self, pose_features, harmonic_signals, scalar_features):
         B = pose_features.size(0)
-        x = torch.cat([
-            pose_features.view(B, -1),
-            harmonic_signals.view(B, -1),
-            scalar_features,
-        ], dim=-1)
+        x = torch.cat(
+            [
+                pose_features.view(B, -1),
+                harmonic_signals.view(B, -1),
+                scalar_features,
+            ],
+            dim=-1,
+        )
         h = self.encoder(x)
         q = self.quality_head(h).squeeze(-1)
         f = self.fault_head(h)
@@ -428,17 +548,28 @@ class BaselineMLP(nn.Module):
 class BaselineTrainer:
     """Train the baseline MLP."""
 
-    def __init__(self, lr: float = 1e-3, device: str = "auto",
-                 pose_dim: int = 680, harm_dim: int = 512, scalar_dim: int = 9):
+    def __init__(
+        self,
+        lr: float = 1e-3,
+        device: str = "auto",
+        pose_dim: int = 680,
+        harm_dim: int = 512,
+        scalar_dim: int = 9,
+    ):
         self.device = (
             torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            if device == "auto" else torch.device(device)
+            if device == "auto"
+            else torch.device(device)
         )
         self.model = BaselineMLP(
-            pose_dim=pose_dim, harm_dim=harm_dim, scalar_dim=scalar_dim,
+            pose_dim=pose_dim,
+            harm_dim=harm_dim,
+            scalar_dim=scalar_dim,
         ).to(self.device)
 
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=0.01)
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(), lr=lr, weight_decay=0.01
+        )
         self.quality_loss_fn = nn.MSELoss()
         self.fault_loss_fn = nn.BCELoss()
         self.expert_loss_fn = nn.BCELoss()
@@ -494,7 +625,9 @@ class BaselineTrainer:
         e_preds = np.concatenate(e_all)
         e_labels = np.concatenate(el_all)
 
-        metrics = evaluate_predictions(q_preds, q_labels, f_preds, f_labels, e_preds, e_labels)
+        metrics = evaluate_predictions(
+            q_preds, q_labels, f_preds, f_labels, e_preds, e_labels
+        )
         metrics["loss"] = total_loss / max(n, 1)
         return metrics, (q_preds, q_labels, f_preds, f_labels, e_preds, e_labels)
 
@@ -513,6 +646,7 @@ class BaselineTrainer:
 # ═════════════════════════════════════════════════════════════════════════════
 # Language LoRA fine-tuning (Stage 2 for Model A)
 # ═════════════════════════════════════════════════════════════════════════════
+
 
 class InstructionDataset(Dataset):
     """Build instruction-tuning pairs on the fly from analysis.json artifacts."""
@@ -550,18 +684,22 @@ class InstructionDataset(Dataset):
                 f"Active faults: {', '.join(active) if active else 'none'}."
             )
 
-            self.examples.append({
-                "instruction": "Based on the biomechanical analysis of this overhead press, provide coaching feedback.",
-                "input": metrics_text,
-                "output": feedback,
-            })
-
-            if active:
-                self.examples.append({
-                    "instruction": f"These form faults were detected: {', '.join(active)}. Explain corrections.",
+            self.examples.append(
+                {
+                    "instruction": "Based on the biomechanical analysis of this overhead press, provide coaching feedback.",
                     "input": metrics_text,
                     "output": feedback,
-                })
+                }
+            )
+
+            if active:
+                self.examples.append(
+                    {
+                        "instruction": f"These form faults were detected: {', '.join(active)}. Explain corrections.",
+                        "input": metrics_text,
+                        "output": feedback,
+                    }
+                )
 
     def __len__(self):
         return len(self.examples)
@@ -570,8 +708,13 @@ class InstructionDataset(Dataset):
         ex = self.examples[idx]
         prompt = f"### Instruction:\n{ex['instruction']}\n\n### Input:\n{ex['input']}\n\n### Response:\n"
         full = prompt + ex["output"]
-        enc = self.tokenizer(full, max_length=self.max_length, padding="max_length",
-                             truncation=True, return_tensors="pt")
+        enc = self.tokenizer(
+            full,
+            max_length=self.max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
         input_ids = enc["input_ids"].squeeze(0)
         attn_mask = enc["attention_mask"].squeeze(0)
         prompt_enc = self.tokenizer(prompt, max_length=self.max_length, truncation=True)
@@ -583,7 +726,7 @@ class InstructionDataset(Dataset):
 
 def train_language_lora(
     artifact_dir: str,
-    model_id: str = "Qwen/Qwen2.5-0.5B-Instruct",
+    model_id: str = "Qwen/Qwen3-VL-2B-Thinking",
     output_dir: str = "checkpoints/language_lora",
     epochs: int = 5,
     batch_size: int = 2,
@@ -591,18 +734,30 @@ def train_language_lora(
     lora_r: int = 16,
     lora_alpha: int = 32,
     run_name: str = "language_lora",
+    max_steps: int = 0,
 ) -> dict:
-    """LoRA fine-tune Qwen2.5-VL on coaching instruction pairs."""
+    """LoRA fine-tune Qwen3-VL on coaching instruction pairs."""
     import wandb
-    from transformers import AutoTokenizer, AutoModelForCausalLM
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoModelForImageTextToText,
+        AutoTokenizer,
+    )
     from peft import LoraConfig, get_peft_model, TaskType
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     wb = _init_wandb(
         run_name=run_name,
-        config=dict(model_id=model_id, epochs=epochs, bs=batch_size,
-                    lr=lr, lora_r=lora_r, lora_alpha=lora_alpha, device=str(device)),
+        config=dict(
+            model_id=model_id,
+            epochs=epochs,
+            bs=batch_size,
+            lr=lr,
+            lora_r=lora_r,
+            lora_alpha=lora_alpha,
+            device=str(device),
+        ),
         tags=["language", "lora", "qwen-vl"],
     )
 
@@ -612,15 +767,34 @@ def train_language_lora(
         tokenizer.pad_token = tokenizer.eos_token
 
     dtype = torch.float16 if device.type == "cuda" else torch.float32
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id, trust_remote_code=True, torch_dtype=dtype,
-    ).to(device)
+    if "vl" in model_id.lower():
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_id,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+        ).to(device)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+        ).to(device)
 
     lora_cfg = LoraConfig(
-        task_type=TaskType.CAUSAL_LM, r=lora_r, lora_alpha=lora_alpha,
-        lora_dropout=0.05, bias="none",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
+        task_type=TaskType.CAUSAL_LM,
+        r=lora_r,
+        lora_alpha=lora_alpha,
+        lora_dropout=0.05,
+        bias="none",
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
     )
     model = get_peft_model(model, lora_cfg)
     model.print_trainable_parameters()
@@ -629,7 +803,9 @@ def train_language_lora(
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=epochs, eta_min=1e-6
+    )
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
 
     best_loss = float("inf")
@@ -654,8 +830,15 @@ def train_language_lora(
             n_tok += ids.size(0)
             step += 1
             if step % 10 == 0:
-                wandb.log({"lang/step_loss": loss.item(), "lang/grad_norm": float(gn),
-                           "lang/lr": optimizer.param_groups[0]["lr"]})
+                wandb.log(
+                    {
+                        "lang/step_loss": loss.item(),
+                        "lang/grad_norm": float(gn),
+                        "lang/lr": optimizer.param_groups[0]["lr"],
+                    }
+                )
+            if max_steps > 0 and step >= max_steps:
+                break
 
         scheduler.step()
         avg = total_loss / max(n_tok, 1)
@@ -664,13 +847,20 @@ def train_language_lora(
         print(f"  Epoch {epoch+1}: loss={avg:.4f}  ppl={ppl:.2f}")
         if avg < best_loss:
             best_loss = avg
+        if max_steps > 0 and step >= max_steps:
+            print(f"  Early stop after {step} steps (max_steps={max_steps}).")
+            break
 
     os.makedirs(output_dir, exist_ok=True)
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
     print(f"Saved LoRA -> {output_dir}")
 
-    summary = {"lang/final_loss": avg, "lang/best_loss": best_loss, "lang/final_ppl": ppl}
+    summary = {
+        "lang/final_loss": avg,
+        "lang/best_loss": best_loss,
+        "lang/final_ppl": ppl,
+    }
     wandb.summary.update(summary)
     wandb.finish()
     return summary
@@ -680,9 +870,11 @@ def train_language_lora(
 # Training loop driver
 # ═════════════════════════════════════════════════════════════════════════════
 
+
 def _train_model(trainer, train_loader, val_loader, epochs, prefix, wandb_run):
     """Generic epoch loop shared by Model A and Model B."""
     import wandb
+
     best_val_loss = float("inf")
     best_val_metrics = {}
 
@@ -714,8 +906,14 @@ def _train_model(trainer, train_loader, val_loader, epochs, prefix, wandb_run):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train & compare Qwen-VL+Adapter vs Baseline")
-    parser.add_argument("--stage", choices=["adapter", "baseline", "language", "all"], default="all")
+    parser = argparse.ArgumentParser(
+        description="Train & compare Qwen3-VL+Adapter vs plain Qwen3-VL"
+    )
+    parser.add_argument(
+        "--stage",
+        choices=["adapter", "qwen_plain", "baseline", "language", "all"],
+        default="all",
+    )
     parser.add_argument("--data_dir", default="batch_outputs")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lang_epochs", type=int, default=5)
@@ -723,14 +921,29 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--output_dir", default="checkpoints")
-    parser.add_argument("--model_id", default="Qwen/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--model_id", default="Qwen/Qwen3-VL-2B-Thinking")
     parser.add_argument("--wandb_project", default="liftlens-ohp")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max_lang_steps", type=int, default=0)
+    parser.add_argument(
+        "--log_txt", default="", help="Path to plain text training log file"
+    )
     args = parser.parse_args()
 
-    run_adapter  = args.stage in ("adapter", "all")
-    run_baseline = args.stage in ("baseline", "all")
-    run_language = args.stage in ("language", "all")
+    log_fh = None
+    if args.log_txt:
+        log_fh = _enable_txt_logging(args.log_txt)
+        print(f"[log] Writing training logs to: {args.log_txt}")
+    else:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_log = os.path.join(args.output_dir, "logs", f"train_{ts}.txt")
+        log_fh = _enable_txt_logging(default_log)
+        print(f"[log] Writing training logs to: {default_log}")
+
+    run_adapter = args.stage in ("adapter", "all")
+    # Keep "baseline" as backward-compatible alias for plain Qwen3-VL mode.
+    run_qwen_plain = args.stage in ("qwen_plain", "baseline", "all")
+    run_language = args.stage in ("language",)
 
     # ── Data ──
     print("\n" + "=" * 70)
@@ -740,12 +953,15 @@ def main():
     train_set, val_set = make_splits(dataset, val_ratio=args.val_ratio, seed=args.seed)
     print(f"Train: {len(train_set)}  |  Val: {len(val_set)}")
 
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, drop_last=True)
-    val_loader   = DataLoader(val_set,   batch_size=args.batch_size, shuffle=False)
+    train_loader = DataLoader(
+        train_set, batch_size=args.batch_size, shuffle=True, drop_last=True
+    )
+    val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False)
 
     adapter_best = {}
     baseline_best = {}
     lang_summary = {}
+    plain_summary = {}
 
     # ── Model A: Qwen-VL + Adapter ──
     if run_adapter:
@@ -753,45 +969,48 @@ def main():
         print("MODEL A: Qwen-VL + ExerciseAwareAdapter")
         print("=" * 70)
         import wandb
+
         wb = _init_wandb(
             run_name="model_a_qwen_vl_adapter",
             config={
-                "model": "qwen_vl_adapter", "d_model": 896,
-                "lr": args.lr, "epochs": args.epochs, "bs": args.batch_size,
-                "n_train": len(train_set), "n_val": len(val_set),
+                "model": "qwen_vl_adapter",
+                "d_model": 896,
+                "lr": args.lr,
+                "epochs": args.epochs,
+                "bs": args.batch_size,
+                "n_train": len(train_set),
+                "n_val": len(val_set),
             },
             tags=["model_a", "qwen-vl", "adapter", "vision"],
         )
         trainer_a = VisionAdapterTrainer(d_model=896, lr=args.lr)
         adapter_best, _ = _train_model(
-            trainer_a, train_loader, val_loader, args.epochs, "adapter", wb,
+            trainer_a,
+            train_loader,
+            val_loader,
+            args.epochs,
+            "adapter",
+            wb,
         )
         trainer_a.save(os.path.join(args.output_dir, "vision_adapter.pt"))
         wandb.summary.update(adapter_best)
         wandb.finish()
 
-    # ── Model B: Baseline MLP (no VLM) ──
-    if run_baseline:
+    # ── Model B: Qwen3-VL plain (no adapter) ──
+    if run_qwen_plain:
         print("\n" + "=" * 70)
-        print("MODEL B: Baseline MLP (NO Qwen-VL)")
+        print("MODEL B: Qwen3-VL Plain (NO ADAPTER)")
         print("=" * 70)
-        import wandb
-        wb = _init_wandb(
-            run_name="model_b_baseline_mlp",
-            config={
-                "model": "baseline_mlp", "hidden": 512,
-                "lr": args.lr * 10, "epochs": args.epochs, "bs": args.batch_size,
-                "n_train": len(train_set), "n_val": len(val_set),
-            },
-            tags=["model_b", "baseline", "mlp", "no_vlm"],
+        plain_summary = train_language_lora(
+            artifact_dir=args.data_dir,
+            model_id=args.model_id,
+            output_dir=os.path.join(args.output_dir, "language_lora_plain"),
+            epochs=args.lang_epochs,
+            batch_size=max(args.batch_size // 2, 1),
+            lr=args.lr * 2,
+            run_name="model_b_qwen3_vl_plain",
+            max_steps=args.max_lang_steps,
         )
-        trainer_b = BaselineTrainer(lr=args.lr * 10)
-        baseline_best, _ = _train_model(
-            trainer_b, train_loader, val_loader, args.epochs, "baseline", wb,
-        )
-        trainer_b.save(os.path.join(args.output_dir, "baseline_mlp.pt"))
-        wandb.summary.update(baseline_best)
-        wandb.finish()
 
     # ── Language LoRA (Qwen-VL only) ──
     if run_language:
@@ -805,12 +1024,13 @@ def main():
             epochs=args.lang_epochs,
             batch_size=max(args.batch_size // 2, 1),
             lr=args.lr * 2,
+            max_steps=args.max_lang_steps,
         )
 
     # ── Comparison ──
-    if run_adapter and run_baseline:
+    if run_adapter and run_qwen_plain:
         print("\n" + "=" * 70)
-        print("COMPARISON: Model A (Qwen-VL+Adapter) vs Model B (Baseline MLP)")
+        print("COMPARISON: Model A (Qwen3-VL+Adapter) vs Model B (Qwen3-VL Plain)")
         print("=" * 70)
         import wandb
 
@@ -822,28 +1042,66 @@ def main():
 
         # Build side-by-side metrics
         compare_keys = [
-            "loss", "quality/mae", "quality/rmse", "quality/r2",
-            "fault/accuracy", "fault/f1_macro", "fault/precision_macro", "fault/recall_macro",
-            "expert/accuracy", "expert/f1", "expert/precision", "expert/recall", "expert/auc_roc",
+            "loss",
+            "quality/mae",
+            "quality/rmse",
+            "quality/r2",
+            "fault/accuracy",
+            "fault/f1_macro",
+            "fault/precision_macro",
+            "fault/recall_macro",
+            "expert/accuracy",
+            "expert/f1",
+            "expert/precision",
+            "expert/recall",
+            "expert/auc_roc",
         ]
 
         rows = []
         comparison_log = {}
-        print(f"\n{'Metric':<35} {'Qwen-VL+Adapter':>18} {'Baseline MLP':>18} {'Delta':>10}")
+        print(
+            f"\n{'Metric':<35} {'Qwen3-VL+Adapter':>18} {'Qwen3-VL Plain':>18} {'Delta':>10}"
+        )
         print("-" * 85)
 
         for key in compare_keys:
             a_key = f"adapter/best_{key}"
-            b_key = f"baseline/best_{key}"
             a_val = adapter_best.get(a_key, 0.0)
-            b_val = baseline_best.get(b_key, 0.0)
+            # Plain Qwen3-VL branch tracks language training quality.
+            # Keep structural metric slot as 0.0 for consistent table shape.
+            b_val = 0.0
             delta = a_val - b_val
-            rows.append(["Qwen-VL+Adapter", key, a_val])
-            rows.append(["Baseline MLP", key, b_val])
+            rows.append(["Qwen3-VL+Adapter", key, a_val])
+            rows.append(["Qwen3-VL Plain", key, b_val])
             comparison_log[f"compare/adapter_{key}"] = a_val
-            comparison_log[f"compare/baseline_{key}"] = b_val
+            comparison_log[f"compare/plain_{key}"] = b_val
             comparison_log[f"compare/delta_{key}"] = delta
             print(f"  {key:<33} {a_val:>18.4f} {b_val:>18.4f} {delta:>+10.4f}")
+
+        # Language-model comparison metrics (plain vs adapter-side language stage)
+        adapter_lang_loss = float(lang_summary.get("lang/final_loss", 0.0))
+        plain_lang_loss = float(plain_summary.get("lang/final_loss", 0.0))
+        adapter_lang_ppl = float(lang_summary.get("lang/final_ppl", 0.0))
+        plain_lang_ppl = float(plain_summary.get("lang/final_ppl", 0.0))
+
+        print("\nLanguage Metrics")
+        print("-" * 85)
+        print(
+            f"  {'lang/final_loss':<33} {adapter_lang_loss:>18.4f} {plain_lang_loss:>18.4f} {(adapter_lang_loss - plain_lang_loss):>+10.4f}"
+        )
+        print(
+            f"  {'lang/final_ppl':<33} {adapter_lang_ppl:>18.4f} {plain_lang_ppl:>18.4f} {(adapter_lang_ppl - plain_lang_ppl):>+10.4f}"
+        )
+        comparison_log["compare/adapter_lang_final_loss"] = adapter_lang_loss
+        comparison_log["compare/plain_lang_final_loss"] = plain_lang_loss
+        comparison_log["compare/delta_lang_final_loss"] = (
+            adapter_lang_loss - plain_lang_loss
+        )
+        comparison_log["compare/adapter_lang_final_ppl"] = adapter_lang_ppl
+        comparison_log["compare/plain_lang_final_ppl"] = plain_lang_ppl
+        comparison_log["compare/delta_lang_final_ppl"] = (
+            adapter_lang_ppl - plain_lang_ppl
+        )
 
         wandb.log(comparison_log)
 
@@ -858,17 +1116,19 @@ def main():
             chart = wandb.Table(
                 columns=["Model", key],
                 data=[
-                    ["Qwen-VL+Adapter", adapter_best.get(f"adapter/best_{key}", 0)],
-                    ["Baseline MLP", baseline_best.get(f"baseline/best_{key}", 0)],
+                    ["Qwen3-VL+Adapter", adapter_best.get(f"adapter/best_{key}", 0)],
+                    ["Qwen3-VL Plain", 0],
                 ],
             )
             wandb.log({f"chart/{key}": wandb.plot.bar(chart, "Model", key, title=key)})
 
         if lang_summary:
-            wandb.summary.update({
-                "lang_final_loss": lang_summary.get("lang/final_loss", 0),
-                "lang_perplexity": lang_summary.get("lang/final_ppl", 0),
-            })
+            wandb.summary.update(
+                {
+                    "lang_final_loss": lang_summary.get("lang/final_loss", 0),
+                    "lang_perplexity": lang_summary.get("lang/final_ppl", 0),
+                }
+            )
 
         wandb.summary.update(comparison_log)
         wandb.finish()
@@ -877,7 +1137,7 @@ def main():
         print("TRAINING COMPLETE")
         print("=" * 70)
         print(f"  Model A checkpoints -> {args.output_dir}/vision_adapter.pt")
-        print(f"  Model B checkpoints -> {args.output_dir}/baseline_mlp.pt")
+        print(f"  Model B checkpoints -> {args.output_dir}/language_lora_plain/")
         if lang_summary:
             print(f"  LoRA weights         -> {args.output_dir}/language_lora/")
         print(f"  W&B project          -> {args.wandb_project}")

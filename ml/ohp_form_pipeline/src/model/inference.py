@@ -1,8 +1,8 @@
 """
-Inference pipeline — ExerciseAware Qwen2.5-VL-0.5B for coaching feedback.
+Inference pipeline — ExerciseAware Qwen3-VL for coaching feedback.
 
 Combines:
-  1. Qwen2.5-VL-0.5B vision encoder (frozen)
+    1. Qwen3-VL vision encoder (frozen)
   2. ExerciseAwareAdapter (trained pose+harmonic fusion layer)
   3. LoRA-finetuned language model (S&C domain knowledge)
 
@@ -23,9 +23,16 @@ from typing import Optional
 
 import numpy as np
 import torch
-import weave
 
-from dotenv import load_dotenv
+weave = None
+
+try:
+    from dotenv import load_dotenv
+except Exception:
+
+    def load_dotenv(*args, **kwargs):
+        return False
+
 
 PIPELINE_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -44,8 +51,15 @@ if _hf_token:
 
     hf_login(token=_hf_token, add_to_git_credential=False)
 
-# Initialize Weave for trace logging
-weave.init("jnolas77-arizona-state-university/capstone")
+# Initialize Weave for trace logging only when explicitly enabled.
+if os.environ.get("ENABLE_WEAVE", "0") == "1":
+    try:
+        import weave as _weave
+
+        _weave.init("jnolas77-arizona-state-university/capstone")
+        weave = _weave
+    except Exception as e:
+        print(f"[warn] Weave init failed: {e}")
 sys.path.insert(0, PIPELINE_ROOT)
 
 
@@ -54,7 +68,7 @@ class ExerciseAwareCoach:
 
     def __init__(
         self,
-        model_id: str = "Qwen/Qwen2.5-0.5B-Instruct",
+        model_id: str = "Qwen/Qwen3-VL-2B-Thinking",
         adapter_path: Optional[str] = None,
         lora_path: Optional[str] = None,
         device: str = "auto",
@@ -78,10 +92,10 @@ class ExerciseAwareCoach:
 
         print(f"Loading {self.model_id} ...")
         from transformers import (
+            AutoModelForImageTextToText,
             AutoModelForCausalLM,
             AutoProcessor,
             AutoTokenizer,
-            Qwen2_5_VLForConditionalGeneration,
         )
 
         dtype = torch.float16 if self.device.type == "cuda" else torch.float32
@@ -93,7 +107,7 @@ class ExerciseAwareCoach:
                 self.model_id,
                 trust_remote_code=True,
             )
-            self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            self._model = AutoModelForImageTextToText.from_pretrained(
                 self.model_id,
                 trust_remote_code=True,
                 torch_dtype=dtype,
@@ -298,7 +312,7 @@ def main():
     parser.add_argument("--artifact", default=None, help="Pre-computed analysis.json")
     parser.add_argument("--adapter", default="checkpoints/vision_adapter.pt")
     parser.add_argument("--lora", default="checkpoints/language_lora")
-    parser.add_argument("--model_id", default="Qwen/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--model_id", default="Qwen/Qwen3-VL-2B-Thinking")
     parser.add_argument("--max_tokens", type=int, default=512)
     args = parser.parse_args()
 

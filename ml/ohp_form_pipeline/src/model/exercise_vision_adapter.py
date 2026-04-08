@@ -4,7 +4,7 @@ vision encoder that fuses biomechanical pose features with visual representation
 
 Architecture:
   ┌─────────────────────────────────────────────────────────┐
-  │  Qwen2.5-VL-0.5B Vision Encoder (frozen)               │
+  │  Qwen3-VL-2B Vision Encoder (frozen)               │
   │  → visual_hidden  (B, N_patches, D_vision)              │
   └───────────────┬─────────────────────────────────────────┘
                   │
@@ -23,6 +23,7 @@ Architecture:
   │  4. Gated fusion: α·original + (1-α)·adapted           │
   └─────────────────────────────────────────────────────────┘
 """
+
 from __future__ import annotations
 
 import math
@@ -71,12 +72,19 @@ class HarmonicEncoder(nn.Module):
     and bilateral symmetry patterns.
     """
 
-    def __init__(self, n_signals: int = 4, n_harmonics: int = 16, d_model: int = 896,
-                 dropout: float = 0.1):
+    def __init__(
+        self,
+        n_signals: int = 4,
+        n_harmonics: int = 16,
+        d_model: int = 896,
+        dropout: float = 0.1,
+    ):
         super().__init__()
         self.n_harmonics = n_harmonics
         # Each signal produces: n_harmonics magnitudes + n_harmonics phases + 3 summary stats
-        feat_per_signal = n_harmonics * 2 + 3  # mag, phase, dominant_freq, spectral_centroid, bandwidth
+        feat_per_signal = (
+            n_harmonics * 2 + 3
+        )  # mag, phase, dominant_freq, spectral_centroid, bandwidth
         total_feat = n_signals * feat_per_signal
         self.proj = nn.Sequential(
             nn.Linear(total_feat, d_model),
@@ -95,22 +103,32 @@ class HarmonicEncoder(nn.Module):
         # Zero-pad to power of 2
         nfft = max(64, 2 ** int(math.ceil(math.log2(T))))
         fft = torch.fft.rfft(signal, n=nfft, dim=-1)
-        magnitudes = torch.abs(fft)[:, :self.n_harmonics]  # (B, n_harmonics)
-        phases = torch.angle(fft)[:, :self.n_harmonics]      # (B, n_harmonics)
+        magnitudes = torch.abs(fft)[:, : self.n_harmonics]  # (B, n_harmonics)
+        phases = torch.angle(fft)[:, : self.n_harmonics]  # (B, n_harmonics)
 
         # Normalize magnitudes
         mag_sum = magnitudes.sum(dim=-1, keepdim=True).clamp(min=1e-8)
         magnitudes = magnitudes / mag_sum
 
         # Summary stats
-        freq_bins = torch.arange(self.n_harmonics, device=signal.device, dtype=signal.dtype)
-        dominant_freq = torch.argmax(magnitudes, dim=-1, keepdim=True).float() / self.n_harmonics
-        spectral_centroid = (magnitudes * freq_bins).sum(dim=-1, keepdim=True) / mag_sum.squeeze(-1).unsqueeze(-1).clamp(min=1e-8)
+        freq_bins = torch.arange(
+            self.n_harmonics, device=signal.device, dtype=signal.dtype
+        )
+        dominant_freq = (
+            torch.argmax(magnitudes, dim=-1, keepdim=True).float() / self.n_harmonics
+        )
+        spectral_centroid = (magnitudes * freq_bins).sum(
+            dim=-1, keepdim=True
+        ) / mag_sum.squeeze(-1).unsqueeze(-1).clamp(min=1e-8)
         bandwidth = torch.sqrt(
-            (magnitudes * (freq_bins - spectral_centroid) ** 2).sum(dim=-1, keepdim=True)
+            (magnitudes * (freq_bins - spectral_centroid) ** 2).sum(
+                dim=-1, keepdim=True
+            )
         )
 
-        return torch.cat([magnitudes, phases, dominant_freq, spectral_centroid, bandwidth], dim=-1)
+        return torch.cat(
+            [magnitudes, phases, dominant_freq, spectral_centroid, bandwidth], dim=-1
+        )
 
     def forward(self, signals: torch.Tensor) -> torch.Tensor:
         """signals: (B, n_signals, T) → (B, 1, D) single harmonic token"""
@@ -128,8 +146,10 @@ class ExerciseCrossAttention(nn.Module):
     def __init__(self, d_model: int, n_heads: int = 8, dropout: float = 0.1):
         super().__init__()
         self.attn = nn.MultiheadAttention(
-            embed_dim=d_model, num_heads=n_heads,
-            dropout=dropout, batch_first=True,
+            embed_dim=d_model,
+            num_heads=n_heads,
+            dropout=dropout,
+            batch_first=True,
         )
         self.norm1 = nn.LayerNorm(d_model)
         self.ffn = nn.Sequential(
@@ -141,8 +161,9 @@ class ExerciseCrossAttention(nn.Module):
         )
         self.norm2 = nn.LayerNorm(d_model)
 
-    def forward(self, visual_tokens: torch.Tensor,
-                exercise_tokens: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, visual_tokens: torch.Tensor, exercise_tokens: torch.Tensor
+    ) -> torch.Tensor:
         """
         visual_tokens:   (B, N_vis, D)
         exercise_tokens: (B, N_ex, D)  — pose tokens + harmonic token
@@ -186,22 +207,24 @@ class ExerciseAwareAdapter(nn.Module):
             d_model=d_model,
             dropout=dropout,
         )
-        self.cross_attn_layers = nn.ModuleList([
-            ExerciseCrossAttention(d_model, n_heads, dropout)
-            for _ in range(n_cross_attn_layers)
-        ])
+        self.cross_attn_layers = nn.ModuleList(
+            [
+                ExerciseCrossAttention(d_model, n_heads, dropout)
+                for _ in range(n_cross_attn_layers)
+            ]
+        )
         # Gated fusion: starts near 0 so adapter is ~identity at init
         self.gate = nn.Parameter(torch.tensor(0.0))
 
     def forward(
         self,
-        visual_hidden: torch.Tensor,        # (B, N_patches, D)
-        pose_features: torch.Tensor,         # (B, T_frames, 85)
-        harmonic_signals: torch.Tensor,      # (B, 4, T_signal)
+        visual_hidden: torch.Tensor,  # (B, N_patches, D)
+        pose_features: torch.Tensor,  # (B, T_frames, 85)
+        harmonic_signals: torch.Tensor,  # (B, 4, T_signal)
     ) -> torch.Tensor:
         """Inject exercise understanding into visual representations."""
         # Project pose features into model dimension
-        pose_tokens = self.pose_proj(pose_features)      # (B, T, D)
+        pose_tokens = self.pose_proj(pose_features)  # (B, T, D)
         # Encode harmonic features
         harmonic_token = self.harmonic_enc(harmonic_signals)  # (B, 1, D)
         # Combine exercise context tokens
@@ -223,8 +246,8 @@ class ExerciseAwareAdapter(nn.Module):
 
 
 def build_pose_feature_vector(
-    keypoints: np.ndarray,     # (N_KP, 2) per frame
-    angles: dict,              # joint angles dict per frame
+    keypoints: np.ndarray,  # (N_KP, 2) per frame
+    angles: dict,  # joint angles dict per frame
     bar_cx: float,
     bar_cy: float,
     bar_tilt: float,
@@ -249,9 +272,12 @@ def build_pose_feature_vector(
 
     # 2. Joint angles (6 dims) — normalize to [0, 1] via /180
     angle_names = [
-        "left_elbow_angle_deg", "right_elbow_angle_deg",
-        "left_knee_angle_deg", "right_knee_angle_deg",
-        "shoulder_line_tilt_deg", "hip_line_tilt_deg",
+        "left_elbow_angle_deg",
+        "right_elbow_angle_deg",
+        "left_knee_angle_deg",
+        "right_knee_angle_deg",
+        "shoulder_line_tilt_deg",
+        "hip_line_tilt_deg",
     ]
     for name in angle_names:
         val = angles.get(name, 0.0)
@@ -262,9 +288,14 @@ def build_pose_feature_vector(
     # 3. Velocities (6 dims)
     if prev_keypoints is not None:
         from ..cv.pose_estimator import KP
+
         dt = 1.0 / fps
-        lw_vel = (keypoints[KP["left_wrist"], 1] - prev_keypoints[KP["left_wrist"], 1]) / dt
-        rw_vel = (keypoints[KP["right_wrist"], 1] - prev_keypoints[KP["right_wrist"], 1]) / dt
+        lw_vel = (
+            keypoints[KP["left_wrist"], 1] - prev_keypoints[KP["left_wrist"], 1]
+        ) / dt
+        rw_vel = (
+            keypoints[KP["right_wrist"], 1] - prev_keypoints[KP["right_wrist"], 1]
+        ) / dt
         le_vel = (angles.get("left_elbow_angle_deg", 0) - 0) / dt  # approx
         re_vel = (angles.get("right_elbow_angle_deg", 0) - 0) / dt
         if prev_bar is not None:
@@ -292,12 +323,19 @@ def build_pose_feature_vector(
     return np.array(feats, dtype=np.float32)
 
 
-def build_harmonic_signals_from_artifact(artifact: dict, target_len: int = 128) -> np.ndarray:
+def build_harmonic_signals_from_artifact(
+    artifact: dict, target_len: int = 128
+) -> np.ndarray:
     """Extract 4 trajectory signals from a processed artifact dict.
 
     Returns: (4, target_len) array of [arm, legs, core, bar_path] trajectories.
     """
-    signal_names = ["arm_trajectory", "legs_trajectory", "core_trajectory", "bar_path_trajectory"]
+    signal_names = [
+        "arm_trajectory",
+        "legs_trajectory",
+        "core_trajectory",
+        "bar_path_trajectory",
+    ]
     signals = []
     for name in signal_names:
         raw = artifact.get("trajectories", {}).get(name, [])
@@ -308,6 +346,7 @@ def build_harmonic_signals_from_artifact(artifact: dict, target_len: int = 128) 
         # Resample to target_len
         if len(arr) != target_len:
             from scipy.signal import resample
+
             arr = resample(arr, target_len).astype(np.float32)
         # Normalize to [-1, 1]
         rng = arr.max() - arr.min()

@@ -16,6 +16,7 @@ Usage:
         --config     configs/default.yaml \
         --workers 1
 """
+
 from __future__ import annotations
 
 import argparse
@@ -38,7 +39,11 @@ import yaml
 from src.io.video_loader import load_video_meta, load_all_frames
 from src.io.json_writer import build_empty_artifact, write_clip_json, _to_serializable
 from src.cv.pose_estimator import (
-    PoseEstimator, PoseResult, extract_angles_from_pose, KP, KEYPOINT_NAMES,
+    PoseEstimator,
+    PoseResult,
+    extract_angles_from_pose,
+    KP,
+    KEYPOINT_NAMES,
 )
 from src.cv.bar_detector import BarDetector
 from src.cv.tracker import smooth_poses, smooth_bar_detections
@@ -48,16 +53,21 @@ from src.signals.smoothing import savgol_smooth
 from src.signals.segmentation import segment_phases, phases_to_dicts
 from src.signals.trajectory_builder import build_all_trajectories
 from src.signals.feature_engineering import (
-    compute_bar_features, compute_bilateral_features,
-    compute_trunk_features, compute_hip_features, compute_leg_features,
+    compute_bar_features,
+    compute_bilateral_features,
+    compute_trunk_features,
+    compute_hip_features,
+    compute_leg_features,
 )
 from src.signals.wave_analysis import compute_wave_features
 from src.unsupervised.cluster_naming import assign_clip_fault_flags
 from src.reasoning.rule_engine import load_rules, select_rules, format_coaching_feedback
 from src.viz.annotated_video import write_annotated_video
 from src.viz.signal_plots import (
-    plot_trajectories, plot_signal_dashboard,
-    plot_bilateral_symmetry, plot_harmonic_wave_patterns,
+    plot_trajectories,
+    plot_signal_dashboard,
+    plot_bilateral_symmetry,
+    plot_harmonic_wave_patterns,
 )
 from src.viz.report_generator import generate_text_report
 
@@ -65,6 +75,7 @@ from src.viz.report_generator import generate_text_report
 def _has_cuda() -> bool:
     try:
         import torch
+
         return torch.cuda.is_available()
     except ImportError:
         return False
@@ -139,13 +150,16 @@ def process_single_video(
             print(f"  [WARN] {vid_name} — no frames loaded, skipping")
             return None
 
-        artifact = build_empty_artifact(meta.video_id, video_path, meta.fps, len(frames))
+        artifact = build_empty_artifact(
+            meta.video_id, video_path, meta.fps, len(frames)
+        )
 
         # Stage 2: Pose estimation
         pose_cfg = cfg["pose"]
         estimator = PoseEstimator(
             backend=pose_cfg["backend"],
             confidence_threshold=pose_cfg["confidence_threshold"],
+            model_path=pose_cfg.get("yolo_weights"),
         )
         poses_raw = estimator.process_video(frames)
         estimator.close()
@@ -196,7 +210,9 @@ def process_single_video(
         midline_x = compute_midline_x(poses)
         resample_len = cfg["pipeline"]["max_frames"]
         traj_dict = build_all_trajectories(
-            poses, bars, resample_len=resample_len,
+            poses,
+            bars,
+            resample_len=resample_len,
             smooth_window=cfg["signals"]["smooth_window"],
         )
         artifact["trajectories"] = {
@@ -208,19 +224,28 @@ def process_single_video(
         bar_cy = np.array([b.center_y for b in bars])
         bar_tilt = np.array([b.tilt_deg for b in bars])
         angle_seq = [extract_angles_from_pose(p) for p in poses]
-        left_elbow_deg = np.array([a.get("left_elbow_angle_deg", np.nan) for a in angle_seq])
-        right_elbow_deg = np.array([a.get("right_elbow_angle_deg", np.nan) for a in angle_seq])
-        shoulder_tilt = np.array([a.get("shoulder_line_tilt_deg", np.nan) for a in angle_seq])
+        left_elbow_deg = np.array(
+            [a.get("left_elbow_angle_deg", np.nan) for a in angle_seq]
+        )
+        right_elbow_deg = np.array(
+            [a.get("right_elbow_angle_deg", np.nan) for a in angle_seq]
+        )
+        shoulder_tilt = np.array(
+            [a.get("shoulder_line_tilt_deg", np.nan) for a in angle_seq]
+        )
         hip_tilt_arr = np.array([a.get("hip_line_tilt_deg", np.nan) for a in angle_seq])
 
         def kp_y(name):
             return np.array([p.keypoints[KP[name], 1] for p in poses])
+
         def kp_x(name):
             return np.array([p.keypoints[KP[name], 0] for p in poses])
 
         ls_x, rs_x = kp_x("left_shoulder"), kp_x("right_shoulder")
         lh_x, rh_x = kp_x("left_hip"), kp_x("right_hip")
-        trunk_cx_arr = np.nanmean(np.stack([(ls_x + rs_x) / 2.0, (lh_x + rh_x) / 2.0]), axis=0)
+        trunk_cx_arr = np.nanmean(
+            np.stack([(ls_x + rs_x) / 2.0, (lh_x + rh_x) / 2.0]), axis=0
+        )
         hip_cx_arr = (lh_x + rh_x) / 2.0
         lk_deg = np.array([a.get("left_knee_angle_deg", np.nan) for a in angle_seq])
         rk_deg = np.array([a.get("right_knee_angle_deg", np.nan) for a in angle_seq])
@@ -235,15 +260,29 @@ def process_single_video(
                 phase_per_frame[fi] = ph.phase_type
 
         # Stage 6: Features + wave analysis
-        bar_feats = compute_bar_features(bar_cx, bar_cy, bar_tilt, meta.fps, scale, midline_x)
-        bilateral_feats = compute_bilateral_features(
-            kp_y("left_wrist"), kp_y("right_wrist"),
-            left_elbow_deg, right_elbow_deg, meta.fps, scale,
+        bar_feats = compute_bar_features(
+            bar_cx, bar_cy, bar_tilt, meta.fps, scale, midline_x
         )
-        trunk_feats = compute_trunk_features(shoulder_tilt, hip_tilt_arr, trunk_cx_arr, scale)
+        bilateral_feats = compute_bilateral_features(
+            kp_y("left_wrist"),
+            kp_y("right_wrist"),
+            left_elbow_deg,
+            right_elbow_deg,
+            meta.fps,
+            scale,
+        )
+        trunk_feats = compute_trunk_features(
+            shoulder_tilt, hip_tilt_arr, trunk_cx_arr, scale
+        )
         hip_feats = compute_hip_features(hip_cx_arr, scale)
         leg_feats = compute_leg_features(lk_deg, rk_deg)
-        all_features = {**bar_feats, **bilateral_feats, **trunk_feats, **hip_feats, **leg_feats}
+        all_features = {
+            **bar_feats,
+            **bilateral_feats,
+            **trunk_feats,
+            **hip_feats,
+            **leg_feats,
+        }
 
         wave_feats = compute_wave_features(bar_cy_smooth, meta.fps, phases, scale)
         wave_feats["quality"]["symmetry"] = bilateral_feats.get("symmetry_score", 0.0)
@@ -261,7 +300,10 @@ def process_single_video(
         rules = load_rules(rules_path)
         triggered = select_rules(fault_flags, rules)
         rule_feedback = format_coaching_feedback(
-            triggered, "unknown", wave_feats["quality"], rules,
+            triggered,
+            "unknown",
+            wave_feats["quality"],
+            rules,
             uncertainty=depth_feats.get("depth_enabled", False),
         )
         artifact["language"] = rule_feedback
@@ -274,8 +316,13 @@ def process_single_video(
         # Annotated video
         annotated_path = os.path.join(vid_dir, "annotated_video.mp4")
         write_annotated_video(
-            frames, poses, bars, fault_flags, phase_per_frame,
-            annotated_path, meta.fps,
+            frames,
+            poses,
+            bars,
+            fault_flags,
+            phase_per_frame,
+            annotated_path,
+            meta.fps,
         )
 
         # Plots
@@ -283,20 +330,28 @@ def process_single_video(
         os.makedirs(plots_dir, exist_ok=True)
         try:
             plot_trajectories(
-                artifact["trajectories"], artifact["phase_segments"],
-                os.path.join(plots_dir, "trajectories.png"), meta.fps,
+                artifact["trajectories"],
+                artifact["phase_segments"],
+                os.path.join(plots_dir, "trajectories.png"),
+                meta.fps,
             )
             plot_signal_dashboard(
-                bar_cy_smooth, meta.fps, artifact["phase_segments"],
+                bar_cy_smooth,
+                meta.fps,
+                artifact["phase_segments"],
                 os.path.join(plots_dir, "dashboard.png"),
             )
             plot_bilateral_symmetry(
-                kp_y("left_wrist"), kp_y("right_wrist"),
-                left_elbow_deg, right_elbow_deg,
+                kp_y("left_wrist"),
+                kp_y("right_wrist"),
+                left_elbow_deg,
+                right_elbow_deg,
                 os.path.join(plots_dir, "bilateral.png"),
             )
             plot_harmonic_wave_patterns(
-                bar_cy, meta.fps, wave_feats,
+                bar_cy,
+                meta.fps,
+                wave_feats,
                 os.path.join(plots_dir, "harmonic_wave.png"),
             )
         except Exception:
@@ -308,7 +363,9 @@ def process_single_video(
         elapsed = time.time() - t0
         grade = wave_feats["quality"].get("grade", "?")
         active_faults = [k for k, v in fault_flags.items() if v]
-        print(f"  [OK] {vid_name} — {elapsed:.1f}s — Grade: {grade} — Faults: {active_faults}")
+        print(
+            f"  [OK] {vid_name} — {elapsed:.1f}s — Grade: {grade} — Faults: {active_faults}"
+        )
         return artifact
 
     except Exception as e:
@@ -332,8 +389,12 @@ def main():
         default=os.path.join(PIPELINE_ROOT, "batch_outputs"),
     )
     parser.add_argument("--config", default="configs/default.yaml")
-    parser.add_argument("--workers", type=int, default=1, help="(reserved for future multiprocessing)")
-    parser.add_argument("--max_videos", type=int, default=0, help="Limit videos (0=all)")
+    parser.add_argument(
+        "--workers", type=int, default=1, help="(reserved for future multiprocessing)"
+    )
+    parser.add_argument(
+        "--max_videos", type=int, default=0, help="Limit videos (0=all)"
+    )
     args = parser.parse_args()
 
     cfg = yaml.safe_load(open(args.config))
@@ -378,7 +439,9 @@ def main():
     elapsed = time.time() - t_start
     summary["elapsed_sec"] = round(elapsed, 1)
     print(f"\n{'='*60}")
-    print(f"Batch complete: {summary['success']} OK / {summary['failed']} failed / {summary['skipped']} skipped")
+    print(
+        f"Batch complete: {summary['success']} OK / {summary['failed']} failed / {summary['skipped']} skipped"
+    )
     print(f"Total time: {elapsed:.0f}s ({elapsed/60:.1f} min)")
 
     with open(os.path.join(args.output_dir, "batch_summary.json"), "w") as f:

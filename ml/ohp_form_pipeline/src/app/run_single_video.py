@@ -113,6 +113,7 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     estimator = PoseEstimator(
         backend=pose_cfg["backend"],
         confidence_threshold=pose_cfg["confidence_threshold"],
+        model_path=pose_cfg.get("yolo_weights"),
     )
     poses_raw = estimator.process_video(frames)
     estimator.close()
@@ -163,7 +164,10 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     # ── Stage 2b: VP3D temporal 3D lifting ───────────────────────────────────
     vp3d_cfg = cfg.get("vp3d", {})
     if vp3d_cfg.get("enabled", False):
-        model_path = os.path.join(root_cfg, vp3d_cfg.get("model_path", "models/pretrained_h36m_detectron_coco.bin"))
+        model_path = os.path.join(
+            root_cfg,
+            vp3d_cfg.get("model_path", "models/pretrained_h36m_detectron_coco.bin"),
+        )
         if not os.path.exists(model_path):
             print(
                 f"[2b] VP3D skipped — model not found at {model_path}\n"
@@ -175,6 +179,7 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
         else:
             print("[2b] VP3D: lifting 2D → 3D via temporal TCN ...")
             from src.cv.vp3d_lifter import VP3DLifter, compute_processed_frame_size
+
             proc_w, proc_h = compute_processed_frame_size(
                 meta.width, meta.height, cfg["pipeline"]["max_height"]
             )
@@ -484,7 +489,14 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     vlm_cfg = cfg.get("vlm", {})
     vlm_gen = VLMFeedbackGenerator(vlm_cfg)
     if vlm_cfg.get("enabled", False):
-        _vlm_frames = [f for _, f in iter_frames(video_path, max_height=cfg["pipeline"]["max_height"], frame_step=cfg["pipeline"]["frame_step"])]
+        _vlm_frames = [
+            f
+            for _, f in iter_frames(
+                video_path,
+                max_height=cfg["pipeline"]["max_height"],
+                frame_step=cfg["pipeline"]["frame_step"],
+            )
+        ]
         key_frames = _sample_key_frames(_vlm_frames, n=vlm_cfg.get("num_key_frames", 4))
         del _vlm_frames
     else:
@@ -502,7 +514,14 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
 
     # Annotated video — reload frames from disk only when needed
     if cfg["viz"]["save_annotated_video"]:
-        frames = [f for _, f in iter_frames(video_path, max_height=cfg["pipeline"]["max_height"], frame_step=cfg["pipeline"]["frame_step"])]
+        frames = [
+            f
+            for _, f in iter_frames(
+                video_path,
+                max_height=cfg["pipeline"]["max_height"],
+                frame_step=cfg["pipeline"]["frame_step"],
+            )
+        ]
         vid_path = os.path.join(video_out, f"{vid_id}_annotated.mp4")
         write_annotated_video(
             frames, poses, bars, fault_flags, phase_per_frame, vid_path, meta.fps
@@ -518,6 +537,7 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
             plot_bilateral_symmetry,
             plot_harmonic_wave_patterns,
         )
+
         plot_trajectories(
             artifact["trajectories"],
             artifact["phase_segments"],
@@ -1459,6 +1479,7 @@ def _planar_twist(
 
 class VideoValidationError(ValueError):
     """Raised when a video fails pre-analysis validation."""
+
     pass
 
 
@@ -1478,18 +1499,21 @@ def _validate_video(
 
     # ── Critical keypoints used for OHP analysis (back-view) ──────────────────
     _CRITICAL = [
-        KP["left_shoulder"], KP["right_shoulder"],
-        KP["left_elbow"], KP["right_elbow"],
-        KP["left_wrist"], KP["right_wrist"],
-        KP["left_hip"], KP["right_hip"],
+        KP["left_shoulder"],
+        KP["right_shoulder"],
+        KP["left_elbow"],
+        KP["right_elbow"],
+        KP["left_wrist"],
+        KP["right_wrist"],
+        KP["left_hip"],
+        KP["right_hip"],
     ]
 
     # ── Check 1: Is a person visible? ─────────────────────────────────────────
     # Count frames where at least 4 of the 8 critical keypoints are visible.
     # Threshold: 30% of frames must have a detectable person.
     frames_with_person = sum(
-        1 for p in poses
-        if sum(1 for idx in _CRITICAL if p.visible[idx]) >= 4
+        1 for p in poses if sum(1 for idx in _CRITICAL if p.visible[idx]) >= 4
     )
     person_ratio = frames_with_person / n
     if person_ratio < 0.30:
@@ -1511,8 +1535,13 @@ def _validate_video(
             "Make sure both wrists are visible throughout the lift."
         )
     bar_travel_ratio = (np.max(valid_bar) - np.min(valid_bar)) / max(
-        np.nanmax([p.keypoints[:, 1].max() for p in poses
-                   if not np.all(np.isnan(p.keypoints))]),
+        np.nanmax(
+            [
+                p.keypoints[:, 1].max()
+                for p in poses
+                if not np.all(np.isnan(p.keypoints))
+            ]
+        ),
         1.0,
     )
     if bar_travel_ratio < 0.08:

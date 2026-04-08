@@ -1,4 +1,5 @@
-"""Pose estimation — MediaPipe backend with multi-pass fallback for back-view videos."""
+"""Pose estimation backends for OHP analysis (MediaPipe and YOLO pose)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -8,38 +9,60 @@ import numpy as np
 
 
 KEYPOINT_NAMES = [
-    "nose", "left_eye_inner", "left_eye", "left_eye_outer",
-    "right_eye_inner", "right_eye", "right_eye_outer",
-    "left_ear", "right_ear",
-    "mouth_left", "mouth_right",
-    "left_shoulder", "right_shoulder",
-    "left_elbow", "right_elbow",
-    "left_wrist", "right_wrist",
-    "left_pinky", "right_pinky",
-    "left_index", "right_index",
-    "left_thumb", "right_thumb",
-    "left_hip", "right_hip",
-    "left_knee", "right_knee",
-    "left_ankle", "right_ankle",
-    "left_heel", "right_heel",
-    "left_foot_index", "right_foot_index",
+    "nose",
+    "left_eye_inner",
+    "left_eye",
+    "left_eye_outer",
+    "right_eye_inner",
+    "right_eye",
+    "right_eye_outer",
+    "left_ear",
+    "right_ear",
+    "mouth_left",
+    "mouth_right",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_pinky",
+    "right_pinky",
+    "left_index",
+    "right_index",
+    "left_thumb",
+    "right_thumb",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+    "left_heel",
+    "right_heel",
+    "left_foot_index",
+    "right_foot_index",
 ]
 KP = {name: i for i, name in enumerate(KEYPOINT_NAMES)}
 
 # Keypoints critical for back-view OHP analysis
 _CRITICAL_KP = [
-    KP["left_shoulder"], KP["right_shoulder"],
-    KP["left_elbow"], KP["right_elbow"],
-    KP["left_wrist"], KP["right_wrist"],
-    KP["left_hip"], KP["right_hip"],
+    KP["left_shoulder"],
+    KP["right_shoulder"],
+    KP["left_elbow"],
+    KP["right_elbow"],
+    KP["left_wrist"],
+    KP["right_wrist"],
+    KP["left_hip"],
+    KP["right_hip"],
 ]
 
 
 @dataclass
 class PoseResult:
-    keypoints: np.ndarray       # (N_KP, 2) in pixel coords, NaN if missing
-    confidences: np.ndarray     # (N_KP,)
-    visible: np.ndarray         # (N_KP,) bool
+    keypoints: np.ndarray  # (N_KP, 2) in pixel coords, NaN if missing
+    confidences: np.ndarray  # (N_KP,)
+    visible: np.ndarray  # (N_KP,) bool
     world_landmarks: Optional[np.ndarray] = None  # (N_KP, 3) metric coords
     frame_idx: int = 0
     confidence_threshold: float = 0.5
@@ -60,9 +83,15 @@ def _count_critical_visible(visible: np.ndarray) -> int:
 def _find_model_path() -> str:
     """Locate the pose_landmarker model file."""
     import os
+
     candidates = [
-        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__)))), "models", "pose_landmarker_heavy.task"),
+        os.path.join(
+            os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ),
+            "models",
+            "pose_landmarker_heavy.task",
+        ),
         os.path.join(os.getcwd(), "models", "pose_landmarker_heavy.task"),
     ]
     for c in candidates:
@@ -81,6 +110,7 @@ class MediaPipePoseEstimator:
 
     def __init__(self, confidence_threshold: float = 0.5):
         import mediapipe as mp
+
         self.conf_thresh = confidence_threshold
         self._last_good_result: Optional[PoseResult] = None
 
@@ -111,8 +141,9 @@ class MediaPipePoseEstimator:
             )
         )
 
-    def _result_to_pose(self, result, h: int, w: int, frame_idx: int,
-                        threshold: float) -> PoseResult:
+    def _result_to_pose(
+        self, result, h: int, w: int, frame_idx: int, threshold: float
+    ) -> PoseResult:
         n_kp = len(KEYPOINT_NAMES)
         keypoints = np.full((n_kp, 2), np.nan)
         confs = np.zeros(n_kp)
@@ -224,16 +255,141 @@ class MediaPipePoseEstimator:
         self._fallback.close()
 
 
+class YOLOPoseEstimator:
+    """Ultralytics YOLO pose backend (COCO-17 keypoints mapped to pipeline schema)."""
+
+    _COCO17_TO_PIPELINE = {
+        0: "nose",
+        1: "left_eye",
+        2: "right_eye",
+        3: "left_ear",
+        4: "right_ear",
+        5: "left_shoulder",
+        6: "right_shoulder",
+        7: "left_elbow",
+        8: "right_elbow",
+        9: "left_wrist",
+        10: "right_wrist",
+        11: "left_hip",
+        12: "right_hip",
+        13: "left_knee",
+        14: "right_knee",
+        15: "left_ankle",
+        16: "right_ankle",
+    }
+
+    def __init__(
+        self, confidence_threshold: float = 0.5, model_path: str | None = None
+    ):
+        import os
+        from ultralytics import YOLO
+
+        self.conf_thresh = confidence_threshold
+        self.model_path = model_path or os.path.join(
+            os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ),
+            "yolo26x-pose.pt",
+        )
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(
+                f"YOLO pose model not found: {self.model_path}. "
+                "Set pose.yolo_weights in config to a valid .pt file."
+            )
+
+        self._model = YOLO(self.model_path)
+
+    def _empty_pose(self, frame_idx: int) -> PoseResult:
+        n_kp = len(KEYPOINT_NAMES)
+        return PoseResult(
+            keypoints=np.full((n_kp, 2), np.nan),
+            confidences=np.zeros(n_kp),
+            visible=np.zeros(n_kp, dtype=bool),
+            frame_idx=frame_idx,
+            confidence_threshold=self.conf_thresh,
+        )
+
+    def process_frame(self, bgr_frame: np.ndarray, frame_idx: int) -> PoseResult:
+        import torch
+
+        n_kp = len(KEYPOINT_NAMES)
+        keypoints = np.full((n_kp, 2), np.nan)
+        confs = np.zeros(n_kp)
+        visible = np.zeros(n_kp, dtype=bool)
+
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        results = self._model.predict(
+            bgr_frame,
+            verbose=False,
+            conf=self.conf_thresh,
+            device=device,
+        )
+        if not results:
+            return self._empty_pose(frame_idx)
+
+        res = results[0]
+        if res.keypoints is None or res.keypoints.xy is None:
+            return self._empty_pose(frame_idx)
+
+        xy = res.keypoints.xy
+        kp_conf = res.keypoints.conf
+        if xy is None or len(xy) == 0:
+            return self._empty_pose(frame_idx)
+
+        det_idx = 0
+        if res.boxes is not None and len(res.boxes) > 0 and res.boxes.conf is not None:
+            det_idx = int(torch.argmax(res.boxes.conf).item())
+
+        pts = xy[det_idx].detach().cpu().numpy()
+        conf_arr = (
+            kp_conf[det_idx].detach().cpu().numpy()
+            if kp_conf is not None
+            else np.ones((pts.shape[0],), dtype=float)
+        )
+
+        for coco_idx, name in self._COCO17_TO_PIPELINE.items():
+            if coco_idx >= pts.shape[0]:
+                continue
+            pidx = KP[name]
+            x, y = float(pts[coco_idx, 0]), float(pts[coco_idx, 1])
+            c = float(conf_arr[coco_idx])
+            confs[pidx] = c
+            if np.isfinite(x) and np.isfinite(y) and c >= self.conf_thresh:
+                keypoints[pidx] = [x, y]
+                visible[pidx] = True
+
+        return PoseResult(
+            keypoints=keypoints,
+            confidences=confs,
+            visible=visible,
+            world_landmarks=None,
+            frame_idx=frame_idx,
+            confidence_threshold=self.conf_thresh,
+        )
+
+    def close(self):
+        return
+
+
 class PoseEstimator:
     """Unified pose estimator factory."""
 
-    def __init__(self, backend: str = "mediapipe", confidence_threshold: float = 0.5):
+    def __init__(
+        self,
+        backend: str = "mediapipe",
+        confidence_threshold: float = 0.5,
+        model_path: str | None = None,
+    ):
         self.backend = backend
         self.conf_thresh = confidence_threshold
         if backend == "mediapipe":
             self._impl = MediaPipePoseEstimator(confidence_threshold)
+        elif backend == "yolo":
+            self._impl = YOLOPoseEstimator(confidence_threshold, model_path=model_path)
         else:
-            raise NotImplementedError(f"Backend '{backend}' not yet implemented. Use 'mediapipe'.")
+            raise NotImplementedError(
+                f"Backend '{backend}' not yet implemented. Use 'mediapipe' or 'yolo'."
+            )
 
     def process_frame(self, bgr_frame: np.ndarray, frame_idx: int) -> PoseResult:
         return self._impl.process_frame(bgr_frame, frame_idx)
@@ -261,11 +417,20 @@ def extract_angles_from_pose(pose: PoseResult) -> dict[str, float]:
             angles[name] = _angle_3pts(pts[0], pts[1], pts[2])
 
     # Elbow angles
-    safe_angle(KP["left_shoulder"], KP["left_elbow"], KP["left_wrist"], "left_elbow_angle_deg")
-    safe_angle(KP["right_shoulder"], KP["right_elbow"], KP["right_wrist"], "right_elbow_angle_deg")
+    safe_angle(
+        KP["left_shoulder"], KP["left_elbow"], KP["left_wrist"], "left_elbow_angle_deg"
+    )
+    safe_angle(
+        KP["right_shoulder"],
+        KP["right_elbow"],
+        KP["right_wrist"],
+        "right_elbow_angle_deg",
+    )
     # Knee angles
     safe_angle(KP["left_hip"], KP["left_knee"], KP["left_ankle"], "left_knee_angle_deg")
-    safe_angle(KP["right_hip"], KP["right_knee"], KP["right_ankle"], "right_knee_angle_deg")
+    safe_angle(
+        KP["right_hip"], KP["right_knee"], KP["right_ankle"], "right_knee_angle_deg"
+    )
     # Shoulder line tilt (angle of shoulder midline from horizontal)
     ls = kp[KP["left_shoulder"]]
     rs = kp[KP["right_shoulder"]]

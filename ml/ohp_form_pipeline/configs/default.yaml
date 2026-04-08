@@ -1,14 +1,15 @@
 pipeline:
   exercise: "ohp"
   camera_position: "BACK"
-  max_height: 480      # reduced from 720 — cuts per-frame RAM ~55%, faster pose estimation
-  max_frames: 64       # reduced from 128 — halves trajectory resampling cost; sufficient for rep analysis
-  frame_step: 1        # process every 2nd frame — halves pose estimation time on CPU
+  max_height: 480 # reduced from 720 — cuts per-frame RAM ~55%, faster pose estimation
+  max_frames: 64 # reduced from 128 — halves trajectory resampling cost; sufficient for rep analysis
+  frame_step: 1 # process every 2nd frame — halves pose estimation time on CPU
   cache_dir: "data/cache"
   output_dir: "outputs"
 
 pose:
-  backend: "mediapipe" # "mediapipe" | "yolo" | "rtmpose"
+  backend: "yolo" # "mediapipe" | "yolo" | "rtmpose"
+  yolo_weights: "C:/Users/josep/Desktop/cappy/capstone/yolo26x-pose.pt"
   confidence_threshold: 0.5
   smooth_window: 11 # Savitzky-Golay window size
   smooth_poly: 3
@@ -27,8 +28,9 @@ bar:
   min_confidence: 0.3
 
 depth:
-  enabled: false       # disabled for CPU — would trigger ~400 MB HuggingFace download
-                       # and run at ~10s/frame on CPU. Set true only on GPU.
+  enabled:
+    false # disabled for CPU — would trigger ~400 MB HuggingFace download
+    # and run at ~10s/frame on CPU. Set true only on GPU.
   backend: "depth_anything_v2" # "depth_anything_v2" | "depth_anything_v1" | "midas"
   model_size: "small" # "small" | "base" | "large"
   model_id: "depth-anything/Depth-Anything-V2-Small-hf"
@@ -36,7 +38,7 @@ depth:
   colorize_previews: true
 
 signals:
-  resample_length: 64   # match max_frames — was 128 (upsampling sparse data adds noise)
+  resample_length: 64 # match max_frames — was 128 (upsampling sparse data adds noise)
   smooth_window: 7
   smooth_poly: 3
   normalize: true
@@ -58,7 +60,7 @@ tracking_filter:
   bar_min_jump_px: 6.0
 
 clustering:
-  n_jobs: 2   # was -1 — limits CPU cores to prevent thermal throttle on laptop
+  n_jobs: 2 # was -1 — limits CPU cores to prevent thermal throttle on laptop
   random_state: 42
   feature_clustering:
     method: "hdbscan" # "hdbscan" | "kmeans" | "gmm" | "agglomerative"
@@ -87,23 +89,23 @@ embedding:
   latent_dim: 32
 
 vlm:
-  enabled: false # CPU: keep false. Requires GPU + peft package + downloaded Qwen2.5-0.5B model.
-  model_id: "Qwen/Qwen2.5-0.5B-Instruct"
+  enabled: false # CPU: keep false. Requires GPU + peft package + downloaded Qwen3-VL model.
+  model_id: "Qwen/Qwen3-VL-2B-Thinking"
   max_new_tokens: 512
   temperature: 0.3
-  device: "cpu"   # was "cuda" — safe default for CPU-only laptop
+  device: "cpu" # was "cuda" — safe default for CPU-only laptop
   num_key_frames: 4
   adapter_path: "checkpoints/vision_adapter.pt"
   lora_path: "checkpoints/language_lora"
 
 vp3d:
-  enabled: true          # Set true once model is downloaded (see below)
+  enabled: true # Set true once model is downloaded (see below)
   # Download the pre-trained model:
   #   mkdir -p models
   #   curl -L -o models/pretrained_h36m_detectron_coco.bin \
   #     https://dl.fbaipublicfiles.com/video-pose-3d/pretrained_h36m_detectron_coco.bin
   model_path: "models/pretrained_h36m_detectron_coco.bin"
-  filter_widths: [3, 3, 3, 3, 3]   # receptive field = 243 frames
+  filter_widths: [3, 3, 3, 3, 3] # receptive field = 243 frames
   channels: 1024
   dropout: 0.25
 

@@ -14,3 +14,4 @@ ohp_form_pipeline/models/**
 
 # Cache
 ohp_form_pipeline/data/cache/
+.env
