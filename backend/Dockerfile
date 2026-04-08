@@ -23,7 +23,7 @@ COPY requirements.txt requirements-extras.txt* ./
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential gcc g++ \
-        libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev curl \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev curl ffmpeg \
     && pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
     && apt-get purge -y --auto-remove build-essential gcc g++ \

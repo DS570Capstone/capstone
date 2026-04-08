@@ -60,6 +60,13 @@ export async function getVideoUrl(videoId: string): Promise<string> {
   return data.url
 }
 
+export async function getCompareVideoUrl(videoId: string): Promise<string> {
+  const res = await fetch(`${BASE}/compare-url/${videoId}`)
+  if (!res.ok) throw new Error('Comparison video not available')
+  const data = await res.json()
+  return data.url
+}
+
 // ── Types ──────────────────────────────────────────────────────
 
 export type JobStatus = {

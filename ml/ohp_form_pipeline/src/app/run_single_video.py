@@ -53,7 +53,7 @@ from src.signals.wave_analysis import compute_wave_features
 from src.unsupervised.cluster_naming import assign_clip_fault_flags
 from src.reasoning.rule_engine import load_rules, select_rules, format_coaching_feedback
 from src.reasoning.feedback_generator import VLMFeedbackGenerator
-from src.viz.annotated_video import write_annotated_video, draw_skeleton, draw_bar
+from src.viz.annotated_video import write_annotated_video, write_comparison_video, draw_skeleton, draw_bar
 from src.viz.report_generator import generate_text_report
 
 
@@ -263,6 +263,14 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     _write_mediapipe_keypoints(
         poses, os.path.join(processed_root, f"{vid_id}_mediapipe_keypoints")
     )
+
+    # Comparison video: raw MediaPipe (red) vs VP3D-cleaned (cyan) side-by-side.
+    # Saved to video_out so the worker can upload it to MinIO for frontend playback.
+    if vp3d_cfg.get("enabled", False):
+        compare_path = os.path.join(video_out, f"{vid_id}_compare_vp3d.mp4")
+        write_comparison_video(frames, poses_raw, poses, compare_path, meta.fps)
+        print(f"      Comparison video → {compare_path}")
+
     del frames  # free ~500 MB — reloaded on-demand for Stage 8 output only
 
     # ── Video validation ──────────────────────────────────────────────────────

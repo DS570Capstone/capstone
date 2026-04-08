@@ -1,7 +1,8 @@
 import { useParams, useNavigate } from 'react-router-dom'
-import { useEffect } from 'react'
-import { Triangle, ArrowLeft, Loader, AlertCircle, AlertTriangle, ExternalLink, Play, History } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Triangle, ArrowLeft, Loader, AlertCircle, AlertTriangle, ExternalLink, Play, History, Video } from 'lucide-react'
 import { useAnalysis } from '../hooks/useAnalysis'
+import { getCompareVideoUrl } from '../api/client'
 import QualityGauge from '../components/QualityGauge'
 import FaultFlags from '../components/FaultFlags'
 import TrajectoryChart from '../components/TrajectoryChart'
@@ -20,6 +21,68 @@ const STAGE_STEPS = [
   'Logging to WandB',
   'Done',
 ]
+
+function CompareVideoPlayer({ videoId }: { videoId: string }) {
+  const [url, setUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(false)
+  const [open, setOpen] = useState(false)
+
+  const load = async () => {
+    if (url) { setOpen(true); return }
+    setLoading(true)
+    try {
+      const u = await getCompareVideoUrl(videoId)
+      setUrl(u)
+      setOpen(true)
+    } catch {
+      setError(true)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="bg-[#171717] rounded-2xl p-6 flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <span className="text-zinc-400 text-sm font-medium uppercase tracking-wider block">
+            Pose Comparison Video
+          </span>
+          <span className="text-zinc-600 text-xs mt-0.5 block">
+            Raw MediaPipe (red) vs VP3D-cleaned (cyan) — side by side
+          </span>
+        </div>
+        <button
+          onClick={open ? () => setOpen(false) : load}
+          disabled={loading || error}
+          className="flex items-center gap-2 text-xs bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 text-indigo-300 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40"
+        >
+          {loading
+            ? <Loader size={13} className="animate-spin" />
+            : <Video size={13} />}
+          {loading ? 'Loading…' : open ? 'Hide' : 'Show video'}
+        </button>
+      </div>
+
+      {error && (
+        <p className="text-zinc-600 text-xs">
+          Comparison video not available — re-analyse with VP3D enabled to generate it.
+        </p>
+      )}
+
+      {open && url && (
+        <video
+          src={url}
+          controls
+          autoPlay={false}
+          className="w-full rounded-xl bg-black"
+          style={{ maxHeight: 420 }}
+        />
+      )}
+    </div>
+  )
+}
 
 export default function Dashboard() {
   const { videoId } = useParams<{ videoId: string }>()
@@ -254,6 +317,9 @@ export default function Dashboard() {
                   </div>
                 </div>
               )}
+
+              {/* VP3D comparison video */}
+              <CompareVideoPlayer videoId={videoId!} />
 
             </div>
           )

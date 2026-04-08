@@ -233,7 +233,7 @@ def results(video_id):
 
 @app.get("/api/video-url/<video_id>")
 def video_url(video_id):
-    """Return a presigned MinIO URL for playback."""
+    """Return a presigned MinIO URL for the original uploaded video."""
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT object_name FROM jobs WHERE video_id=%s", (video_id,))
@@ -242,6 +242,20 @@ def video_url(video_id):
         return jsonify(error="Not found"), 404
     from datetime import timedelta
     url = minio_client.presigned_get_object(MINIO_BUCKET, row["object_name"], expires=timedelta(hours=1))
+    return jsonify(url=url)
+
+
+@app.get("/api/compare-url/<video_id>")
+def compare_url(video_id):
+    """Return a presigned MinIO URL for the VP3D comparison video."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT artifact->>'compare_object' AS compare_object FROM results WHERE video_id=%s", (video_id,))
+            row = cur.fetchone()
+    if not row or not row["compare_object"]:
+        return jsonify(error="Comparison video not available"), 404
+    from datetime import timedelta
+    url = minio_client.presigned_get_object(MINIO_BUCKET, row["compare_object"], expires=timedelta(hours=1))
     return jsonify(url=url)
 
 
@@ -299,6 +313,25 @@ def _run_worker_inline(video_id: str, object_name: str):
         os.makedirs(out_dir, exist_ok=True)
         artifact = run(tmp_path, ml_config, out_dir)
         artifact["video_id"] = video_id
+
+        # Upload annotated video to MinIO if produced
+        ann_candidates = [
+            os.path.join(out_dir, "videos", f"{artifact.get('video_id', video_id)}_annotated.mp4"),
+            os.path.join(out_dir, "annotated.mp4"),
+        ]
+        for candidate in ann_candidates:
+            if os.path.exists(candidate):
+                ann_obj = f"annotated/{video_id}.mp4"
+                minio_client.fput_object(MINIO_BUCKET, ann_obj, candidate, content_type="video/mp4")
+                artifact["annotated_object"] = ann_obj
+                break
+
+        # Upload VP3D comparison video to MinIO if produced
+        compare_candidate = os.path.join(out_dir, "videos", f"{artifact.get('video_id', video_id)}_compare_vp3d.mp4")
+        if os.path.exists(compare_candidate):
+            cmp_obj = f"compare/{video_id}.mp4"
+            minio_client.fput_object(MINIO_BUCKET, cmp_obj, compare_candidate, content_type="video/mp4")
+            artifact["compare_object"] = cmp_obj
 
         _set("running", "Storing results", 90)
         with get_conn() as conn:
