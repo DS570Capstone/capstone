@@ -8,8 +8,7 @@ pipeline:
   output_dir: "outputs"
 
 pose:
-  backend: "yolo" # "mediapipe" | "yolo" | "rtmpose"
-  yolo_weights: "C:/Users/josep/Desktop/cappy/capstone/yolo26x-pose.pt"
+  backend: "disabled" # pose estimation removed
   confidence_threshold: 0.5
   smooth_window: 11 # Savitzky-Golay window size
   smooth_poly: 3

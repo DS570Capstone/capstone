@@ -113,7 +113,6 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     estimator = PoseEstimator(
         backend=pose_cfg["backend"],
         confidence_threshold=pose_cfg["confidence_threshold"],
-        model_path=pose_cfg.get("yolo_weights"),
     )
     poses_raw = estimator.process_video(frames)
     estimator.close()
@@ -274,7 +273,10 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
     # Runs on pose/bar data from Stage 2 — no extra compute cost.
     # Raises VideoValidationError with a user-friendly message if the video is
     # unsuitable (no person, no movement, wrong camera angle).
-    _validate_video(poses, bars, meta.fps)
+    if pose_cfg.get("backend", "mediapipe") != "disabled":
+        _validate_video(poses, bars, meta.fps)
+    else:
+        print("      Pose validation skipped — pose estimation is disabled.")
 
     # ── Stage 3: Depth ──
     depths = []
@@ -285,7 +287,7 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
         "torso_depth_shift": 0.0,
         "subject_depth_stability": 0.0,
     }
-    if cfg["depth"]["enabled"]:
+    if False:
         print("[3/8] Estimating depth ...")
         depth_cache = os.path.join(cfg["pipeline"]["cache_dir"], "depth")
         depth_est = DepthEstimator(
@@ -316,7 +318,7 @@ def run(video_path: str, config_path: str, output_dir: str = None) -> dict:
             "bar_depth_relative_to_shoulder_plane", []
         )
     else:
-        print("[3/8] Depth disabled — skipping.")
+        print("[3/8] Depth removed — skipping.")
         _write_depth_disabled_note(os.path.join(processed_root, "depth_maps"))
     artifact["depth_features"] = depth_feats
 

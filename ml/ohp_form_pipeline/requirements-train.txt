@@ -19,7 +19,6 @@ einops>=0.7
 hdbscan>=0.8.33
 umap-learn>=0.5.5
 tslearn>=0.6
-ultralytics>=8.3
 
 # ── Interactive visualization ─────────────────────────────────────────────────
 plotly>=5.15

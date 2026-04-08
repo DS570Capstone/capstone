@@ -159,7 +159,6 @@ def process_single_video(
         estimator = PoseEstimator(
             backend=pose_cfg["backend"],
             confidence_threshold=pose_cfg["confidence_threshold"],
-            model_path=pose_cfg.get("yolo_weights"),
         )
         poses_raw = estimator.process_video(frames)
         estimator.close()
@@ -192,7 +191,7 @@ def process_single_video(
         depths = []
         depth_feats = {"depth_enabled": False}
         depth_map_dir = os.path.join(vid_dir, "depth_maps")
-        if cfg["depth"]["enabled"] and depth_est is not None:
+        if False and depth_est is not None:
             depths = depth_est.process_video(frames, video_id=vid_name)
             _save_depth_maps(depths, depth_map_dir)
             df_raw = depth_est.extract_depth_features(depths, poses, bars)
@@ -404,18 +403,8 @@ def main():
     if args.max_videos > 0:
         videos = videos[: args.max_videos]
 
-    # Pre-load depth estimator (shared across videos)
+    # Depth estimation removed.
     depth_est = None
-    if cfg["depth"]["enabled"]:
-        print("Loading depth model (shared) ...")
-        depth_est = DepthEstimator(
-            backend=cfg["depth"]["backend"],
-            model_size=cfg["depth"]["model_size"],
-            model_id=cfg["depth"].get("model_id"),
-            cache_dir=os.path.join(cfg["pipeline"]["cache_dir"], "depth"),
-            colorize_previews=cfg["depth"]["colorize_previews"],
-            device="cuda" if _has_cuda() else "cpu",
-        )
 
     summary = {"total": len(videos), "success": 0, "failed": 0, "skipped": 0}
     t_start = time.time()
