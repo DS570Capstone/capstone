@@ -328,20 +328,64 @@ def build_harmonic_signals_from_artifact(
 ) -> np.ndarray:
     """Extract 4 trajectory signals from a processed artifact dict.
 
-    Returns: (4, target_len) array of [arm, legs, core, bar_path] trajectories.
+    Returns: (4, target_len) array of mask/body-driven signals.
     """
-    signal_names = [
-        "arm_trajectory",
-        "legs_trajectory",
-        "core_trajectory",
-        "bar_path_trajectory",
-    ]
+    signal_names = ["arm_mean", "arm_asym", "core", "arm_core_delta"]
+    raw_signals = artifact.get("raw_signals", {})
+    phase_segments = artifact.get("phase_segments", [])
+
+    def _phase_signal(n: int) -> np.ndarray:
+        sig = np.zeros(n, dtype=np.float32)
+        for ph in phase_segments:
+            ptype = str(ph.get("type", "unknown"))
+            val_map = {
+                "setup": 0.0,
+                "concentric": -1.0,
+                "lockout": 0.5,
+                "eccentric": 1.0,
+                "rest": 0.0,
+            }
+            val = float(val_map.get(ptype, 0.0))
+            s = max(int(ph.get("start_frame", 0)), 0)
+            e = min(int(ph.get("end_frame", n - 1)), n - 1)
+            if e >= s:
+                sig[s : e + 1] = val
+        return sig
+
+    left_wrist = np.asarray(raw_signals.get("left_wrist_y", []), dtype=np.float32)
+    right_wrist = np.asarray(raw_signals.get("right_wrist_y", []), dtype=np.float32)
+    core = np.asarray(raw_signals.get("trunk_center_x", []), dtype=np.float32)
+
+    base_len = max(len(left_wrist), len(right_wrist), len(core), target_len)
+    if base_len <= 0:
+        base_len = target_len
+
+    def _fit_len(arr: np.ndarray, n: int) -> np.ndarray:
+        if arr.size == 0:
+            return np.zeros(n, dtype=np.float32)
+        if len(arr) == n:
+            return arr.astype(np.float32)
+        from scipy.signal import resample
+
+        return resample(arr, n).astype(np.float32)
+
+    lw = _fit_len(left_wrist, base_len)
+    rw = _fit_len(right_wrist, base_len)
+    cx = _fit_len(core, base_len)
+    phase = _phase_signal(base_len)
+
+    fallback_map = {
+        "arm_mean": 0.5 * (lw + rw),
+        "arm_asym": lw - rw,
+        "core": cx,
+        "arm_core_delta": 0.5 * (lw + rw) - cx + 0.1 * phase,
+    }
+
     signals = []
     for name in signal_names:
-        raw = artifact.get("trajectories", {}).get(name, [])
-        if not raw:
-            raw = [0.0] * target_len
-        arr = np.array(raw, dtype=np.float32)
+        arr = fallback_map.get(name, np.zeros(target_len, dtype=np.float32))
+        if arr.size == 0:
+            arr = np.zeros(target_len, dtype=np.float32)
         arr = np.nan_to_num(arr, nan=0.0)
         # Resample to target_len
         if len(arr) != target_len:

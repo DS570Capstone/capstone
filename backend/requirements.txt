@@ -28,26 +28,12 @@ scipy==1.13.1
 # ── Computer vision ────────────────────────────────────────────────────────────
 # opencv-python-headless: no GUI deps — correct for Docker/server use
 opencv-python-headless==4.9.0.80
-# mediapipe: pose estimation — loads pose_landmarker_heavy.task at runtime
-mediapipe==0.10.14
+# ultralytics: YOLO pose prompt tracker for SAM2+YOLO pipeline
+ultralytics>=8.3
 
 # ── Clustering + ML ────────────────────────────────────────────────────────────
-# scikit-learn: used by batch_process.py and train.py.
 scikit-learn==1.4.2
-# hdbscan + umap-learn are used ONLY in batch_process.py (offline batch tool),
-# NOT in run_single_video.py (live pipeline). Removed to save ~150 MB + build time.
-# Add them back if you run batch_process.py inside Docker.
 
 # ── Visualization ──────────────────────────────────────────────────────────────
-# matplotlib is lazy-loaded inside signal_plots.py (only when save_plots=true).
 matplotlib==3.9.0
 Pillow==10.3.0
-
-# ── PyTorch / Transformers ─────────────────────────────────────────────────────
-# NOT included here — depth.enabled and vlm.enabled are both false in default.yaml,
-# so torch/torchvision/transformers are never imported during normal operation.
-# Saves ~520 MB from the Docker image.
-#
-# To re-enable depth or VLM, install extras first:
-#   pip install -r requirements-extras.txt
-# then set depth.enabled or vlm.enabled to true in configs/default.yaml.

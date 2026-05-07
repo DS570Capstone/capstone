@@ -6,14 +6,15 @@ const GRADE_COLOR: Record<string, string> = {
 
 export default function QualityGauge({ quality }: { quality: WaveFeatures['quality'] }) {
   const color = GRADE_COLOR[quality.grade] ?? '#6366f1'
-  const pct = Math.round(quality.overall * 100)
+  const safe = (v: number) => (Number.isFinite(v) ? v : 0)
+  const pct = Math.round(safe(quality.overall) * 100)
 
   const metrics = [
-    { label: 'Smoothness',   val: quality.smoothness },
-    { label: 'Control',      val: quality.control },
-    { label: 'Efficiency',   val: quality.efficiency },
-    { label: 'Consistency',  val: quality.consistency },
-    { label: 'Symmetry',     val: quality.symmetry },
+    { label: 'Smoothness',   val: safe(quality.smoothness) },
+    { label: 'Control',      val: safe(quality.control) },
+    { label: 'Efficiency',   val: safe(quality.efficiency) },
+    { label: 'Consistency',  val: safe(quality.consistency) },
+    { label: 'Symmetry',     val: safe(quality.symmetry) },
   ]
 
   return (

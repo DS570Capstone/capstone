@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useEffect } from 'react'
-import { Triangle, ArrowLeft, Loader, AlertCircle, AlertTriangle, ExternalLink, Play, History } from 'lucide-react'
+import { Triangle, ArrowLeft, Loader, AlertCircle, AlertTriangle, ExternalLink, Play, History, BookOpen } from 'lucide-react'
 import { useAnalysis } from '../hooks/useAnalysis'
 import QualityGauge from '../components/QualityGauge'
 import FaultFlags from '../components/FaultFlags'
@@ -47,8 +47,15 @@ export default function Dashboard() {
         <span className="text-zinc-700 text-sm ml-1">/ {displayName}</span>
 
         <button
-          onClick={() => navigate('/history')}
+          onClick={() => navigate('/guide')}
           className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors"
+        >
+          <BookOpen size={14} />
+          Guide
+        </button>
+        <button
+          onClick={() => navigate('/history')}
+          className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors"
         >
           <History size={14} />
           History
@@ -146,6 +153,8 @@ export default function Dashboard() {
         {state.phase === 'done' && (() => {
           const r = state.result
           const wf = r.wave_features
+          const clusterLabel = (r.unsupervised?.consensus_cluster_name ?? '').trim()
+          const showClusterBadge = clusterLabel.length > 0 && clusterLabel.toLowerCase() !== 'unknown'
           return (
             <div className="flex flex-col gap-6">
 
@@ -158,9 +167,11 @@ export default function Dashboard() {
                   </p>
                 </div>
                 <div className="flex gap-2">
-                  <span className="text-xs text-zinc-400 bg-zinc-800 px-3 py-1.5 rounded-lg border border-zinc-700">
-                    {r.unsupervised.consensus_cluster_name}
-                  </span>
+                  {showClusterBadge && (
+                    <span className="text-xs text-zinc-400 bg-zinc-800 px-3 py-1.5 rounded-lg border border-zinc-700">
+                      {clusterLabel}
+                    </span>
+                  )}
                   {state.wandbUrl && (
                     <a href={state.wandbUrl} target="_blank" rel="noopener noreferrer"
                       className="flex items-center gap-1.5 text-xs text-yellow-400 bg-yellow-400/10 border border-yellow-400/20 px-3 py-1.5 rounded-lg hover:bg-yellow-400/20 transition-colors">

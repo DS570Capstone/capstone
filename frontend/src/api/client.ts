@@ -25,6 +25,12 @@ export async function getHistory(): Promise<HistoryItem[]> {
   return res.json()
 }
 
+export async function getHistorySummary(): Promise<HistorySummary> {
+  const res = await fetch(`${BASE}/history-summary`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
 export async function triggerAnalysis(videoId: string): Promise<{ jobId: string }> {
   const res = await fetch(`${BASE}/analyze/${videoId}`, { method: 'POST' })
   if (!res.ok) throw new Error(await res.text())
@@ -58,6 +64,21 @@ export async function getVideoUrl(videoId: string): Promise<string> {
   if (!res.ok) throw new Error(await res.text())
   const data = await res.json()
   return data.url
+}
+
+export async function getSettings(): Promise<AnalysisSettings> {
+  const res = await fetch(`${BASE}/settings`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function updateSettings(settings: AnalysisSettings): Promise<void> {
+  const res = await fetch(`${BASE}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  })
+  if (!res.ok) throw new Error(await res.text())
 }
 
 // ── Types ──────────────────────────────────────────────────────
@@ -164,8 +185,42 @@ export type HistoryItem = {
   duration_sec: number | null
   fault_count: number
   error: string | null
+  signal_processing?: {
+    backend?: string
+    max_height?: number
+    max_frames?: number
+    frame_step?: number
+    resample_length?: number
+    yolo_every_n?: number
+    yolo_frame_step?: number
+    lowpass_cutoff_hz?: number
+  } | null
 }
 
 export type DuplicateCheck =
   | { duplicate: false }
   | { duplicate: true; video_id: string; filename: string; status: string; grade: string | null; created_at: string }
+
+export type HistorySummary = {
+  processed_videos: number
+  reprocessed_runs: number
+  grade_counts: Record<string, number>
+  fault_counts: { fault: string; count: number }[]
+}
+
+export type AnalysisSettings = {
+  pipeline: {
+    max_height: number
+    max_frames: number
+    frame_step: number
+  }
+  signals: {
+    resample_length: number
+  }
+  tracker: {
+    backend: 'yolo_keypoints' | 'sam2_yolo'
+    yolo_every_n: number
+    yolo_frame_step: number
+    signal_cutoff_hz: number
+  }
+}

@@ -25,6 +25,10 @@ RUN apt-get update \
         build-essential gcc g++ \
         libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev curl \
     && pip install --no-cache-dir --upgrade pip \
+    # PyTorch CPU-only — needed by ultralytics
+    && pip install --no-cache-dir torch torchvision \
+        --index-url https://download.pytorch.org/whl/cpu \
+    # Main requirements (includes ultralytics, opencv, scipy, etc.)
     && pip install --no-cache-dir -r requirements.txt \
     && apt-get purge -y --auto-remove build-essential gcc g++ \
     && rm -rf /var/lib/apt/lists/* /root/.cache/pip

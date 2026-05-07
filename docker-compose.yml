@@ -110,6 +110,8 @@ services:
       # and outputs/; :ro would block subdirectory volume mounts.
       - ./ml/ohp_form_pipeline:/app/ml
       - ml_outputs:/app/ml/outputs
+      # SAM2 + YOLO model weights (shared, read-only)
+      - ./ml/models:/app/ml_models:ro
       # Cache HuggingFace models across container restarts (used if depth re-enabled)
       - hf_cache:/app/.cache/huggingface
 

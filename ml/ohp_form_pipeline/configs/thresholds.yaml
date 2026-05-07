@@ -22,17 +22,17 @@ faults:
 
   compensatory_lateral_shift:
     metric: "trunk_lateral_shift_normalized"
-    threshold: 0.06
+    threshold: 0.24          # raised: previous value over-flagged nearly all clips
     direction: "gt"
 
   trunk_shift_under_load:
     metric: "trunk_shift_peak_normalized"
-    threshold: 0.08
+    threshold: 0.28          # raised: reduce near-universal triggering
     direction: "gt"
 
   hip_shift_compensation:
     metric: "hip_lateral_shift_normalized"
-    threshold: 0.07
+    threshold: 0.20          # raised: keep hip shift meaningful, not always-on
     direction: "gt"
 
   unstable_lockout:
@@ -42,11 +42,11 @@ faults:
 
   forward_bar_drift_depth_proxy:
     metric: "bar_depth_drift_normalized"
-    threshold: 0.10
+    threshold: 0.30          # raised: depth proxy is noisy in CPU/back-view mode
     direction: "gt"
 
 quality_thresholds:
-  grade_A: 0.85
+  grade_A: 0.80
   grade_B: 0.70
   grade_C: 0.55
   grade_D: 0.40

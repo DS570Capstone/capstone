@@ -132,19 +132,34 @@ class VLMFeedbackGenerator:
         self,
         artifact: dict,
         key_frames: Optional[list[np.ndarray]] = None,
-        rule_based_fallback: Optional[dict] = None,
+        rule_based_fallback: Optional[dict | str] = None,
     ) -> dict:
         """Generate language feedback. Falls back to rule_based_fallback if VLM unavailable."""
-        if not self.enabled:
-            return rule_based_fallback or {
+        def _fallback_payload(fb: Optional[dict | str]) -> dict:
+            if isinstance(fb, dict):
+                return {
+                    "summary": fb.get("summary", ""),
+                    "coach_feedback": fb.get("coach_feedback", ""),
+                    "reasoning_trace_short": fb.get("reasoning_trace_short", "rule-based fallback"),
+                }
+            if isinstance(fb, str):
+                return {
+                    "summary": fb[:200] if len(fb) > 200 else fb,
+                    "coach_feedback": fb,
+                    "reasoning_trace_short": "rule-based fallback",
+                }
+            return {
                 "summary": "VLM disabled.",
                 "coach_feedback": "",
                 "reasoning_trace_short": "",
             }
 
+        if not self.enabled:
+            return _fallback_payload(rule_based_fallback)
+
         self._load()
         if not self.enabled:
-            return rule_based_fallback or {}
+            return _fallback_payload(rule_based_fallback)
 
         import torch
         from PIL import Image

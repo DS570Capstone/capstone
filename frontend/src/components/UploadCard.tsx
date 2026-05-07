@@ -1,6 +1,6 @@
-import { useState, useRef, DragEvent } from 'react'
-import { Upload, Loader, CheckCircle, Triangle, History, AlertTriangle } from 'lucide-react'
-import { uploadVideo, checkDuplicate, triggerAnalysis } from '../api/client'
+import { useState, useRef, DragEvent, useEffect } from 'react'
+import { Upload, Loader, CheckCircle, Triangle, History, BookOpen, AlertTriangle, SlidersHorizontal, Save } from 'lucide-react'
+import { uploadVideo, checkDuplicate, triggerAnalysis, getSettings, updateSettings, AnalysisSettings } from '../api/client'
 import { useNavigate } from 'react-router-dom'
 
 type Phase = 'idle' | 'hashing' | 'uploading' | 'done' | 'error'
@@ -18,11 +18,33 @@ export default function UploadCard() {
   const [filename, setFilename] = useState('')
   const [dragging, setDragging] = useState(false)
   const [duplicate, setDuplicate] = useState<{ videoId: string; grade: string | null; filename: string; createdAt: string } | null>(null)
+  const [settings, setSettings] = useState<AnalysisSettings | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsMsg, setSettingsMsg] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
 
   const MAX_FILE_MB = 500
   const MAX_DURATION_SEC = 90
+
+  useEffect(() => {
+    getSettings().then(setSettings).catch(() => {})
+  }, [])
+
+  const saveSettings = async () => {
+    if (!settings) return
+    setSettingsSaving(true)
+    setSettingsMsg('')
+    try {
+      await updateSettings(settings)
+      setSettingsMsg('Saved. New analyses will use these settings.')
+    } catch (e: any) {
+      setSettingsMsg(e.message || 'Failed to save settings.')
+    } finally {
+      setSettingsSaving(false)
+    }
+  }
 
   const handleFile = async (file: File) => {
     if (!file.type.startsWith('video/')) {
@@ -102,8 +124,15 @@ export default function UploadCard() {
         </div>
         <span className="text-white font-bold">LiftLens</span>
         <button
-          onClick={() => navigate('/history')}
+          onClick={() => navigate('/guide')}
           className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors"
+        >
+          <BookOpen size={14} />
+          Guide
+        </button>
+        <button
+          onClick={() => navigate('/history')}
+          className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors"
         >
           <History size={14} />
           History
@@ -230,6 +259,77 @@ export default function UploadCard() {
                   className="text-xs text-zinc-400 hover:text-white underline"
                 >Try again</button>
               </>
+            )}
+          </div>
+
+          {/* Analysis settings */}
+          <div className="bg-[#171717] rounded-2xl border border-zinc-800/60 p-4">
+            <button
+              onClick={() => setSettingsOpen(v => !v)}
+              className="w-full flex items-center justify-between text-left"
+            >
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal size={15} className="text-zinc-400" />
+                <span className="text-sm text-white font-medium">Analysis settings</span>
+              </div>
+              <span className="text-xs text-zinc-500">{settingsOpen ? 'Hide' : 'Show'}</span>
+            </button>
+            {settingsOpen && settings && (
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="text-xs text-zinc-400 flex flex-col gap-1">
+                  Max Height
+                  <input className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-100"
+                    type="number" min={240} max={1080} value={settings.pipeline.max_height}
+                    onChange={e => setSettings({ ...settings, pipeline: { ...settings.pipeline, max_height: Number(e.target.value) } })} />
+                </label>
+                <label className="text-xs text-zinc-400 flex flex-col gap-1">
+                  Max Frames
+                  <input className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-100"
+                    type="number" min={32} max={256} value={settings.pipeline.max_frames}
+                    onChange={e => setSettings({ ...settings, pipeline: { ...settings.pipeline, max_frames: Number(e.target.value) } })} />
+                </label>
+                <label className="text-xs text-zinc-400 flex flex-col gap-1">
+                  Frame Step
+                  <input className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-100"
+                    type="number" min={1} max={4} value={settings.pipeline.frame_step}
+                    onChange={e => setSettings({ ...settings, pipeline: { ...settings.pipeline, frame_step: Number(e.target.value) } })} />
+                </label>
+                <label className="text-xs text-zinc-400 flex flex-col gap-1">
+                  Resample Length
+                  <input className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-100"
+                    type="number" min={32} max={256} value={settings.signals.resample_length}
+                    onChange={e => setSettings({ ...settings, signals: { ...settings.signals, resample_length: Number(e.target.value) } })} />
+                </label>
+                <label className="text-xs text-zinc-400 flex flex-col gap-1">
+                  YOLO Every N
+                  <input className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-100"
+                    type="number" min={1} max={4} value={settings.tracker.yolo_every_n}
+                    onChange={e => setSettings({ ...settings, tracker: { ...settings.tracker, yolo_every_n: Number(e.target.value) } })} />
+                </label>
+                <label className="text-xs text-zinc-400 flex flex-col gap-1">
+                  YOLO Frame Step
+                  <input className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-100"
+                    type="number" min={1} max={4} value={settings.tracker.yolo_frame_step}
+                    onChange={e => setSettings({ ...settings, tracker: { ...settings.tracker, yolo_frame_step: Number(e.target.value) } })} />
+                </label>
+                <label className="text-xs text-zinc-400 flex flex-col gap-1 md:col-span-2">
+                  Signal Cutoff Hz
+                  <input className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-100"
+                    type="number" min={0.5} max={6} step={0.1} value={settings.tracker.signal_cutoff_hz}
+                    onChange={e => setSettings({ ...settings, tracker: { ...settings.tracker, signal_cutoff_hz: Number(e.target.value) } })} />
+                </label>
+                <div className="md:col-span-2 flex items-center gap-3">
+                  <button
+                    onClick={saveSettings}
+                    disabled={settingsSaving}
+                    className="text-xs bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+                  >
+                    <Save size={12} />
+                    {settingsSaving ? 'Saving...' : 'Save settings'}
+                  </button>
+                  {settingsMsg && <span className="text-xs text-zinc-400">{settingsMsg}</span>}
+                </div>
+              </div>
             )}
           </div>
 

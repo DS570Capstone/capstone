@@ -1,20 +1,18 @@
 """
-batch_process.py — Process all videos in a directory tree end-to-end.
+batch_process.py - SAM2+YOLO-only batch processing and wave analysis.
 
-Creates per-video output folders, each containing:
-  - annotated_video.mp4   (skeleton + bar overlay)
-  - depth_maps/           (per-frame .npy + colourised .jpg previews)
-  - analysis.json         (full 80+ metric artifact)
-  - keypoints.json        (per-frame MediaPipe keypoints)
-  - report.txt            (text coaching report)
-  - plots/                (trajectory, bilateral, harmonic, dashboard PNGs)
+Processes all videos recursively and saves per-video:
+  - sam2_overlay.mp4
+  - masks/frame_XXXXXX.npy
+  - analysis.json
+  - plots/dashboard.png
+  - plots/harmonic_wave.png
+  - report.txt
 
 Usage:
-    python batch_process.py \
-        --input_dir  "C:/Users/josep/Desktop/Capstone_new/videos/First 500 Vids" \
-        --output_dir "C:/Users/josep/Desktop/Capstone_new/ml/ohp_form_pipeline/batch_outputs" \
-        --config     configs/default.yaml \
-        --workers 1
+  python batch_process.py \
+      --input_dir "/scratch/jnolas77/fitness/capstone/First 500 Vids" \
+      --output_dir "/scratch/jnolas77/fitness/capstone/ml/ohp_form_pipeline/batch_outputs"
 """
 
 from __future__ import annotations
@@ -28,63 +26,28 @@ import time
 import traceback
 from pathlib import Path
 
+import numpy as np
+import yaml
+
 PIPELINE_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PIPELINE_ROOT)
 os.chdir(PIPELINE_ROOT)
 
-import cv2
-import numpy as np
-import yaml
-
-from src.io.video_loader import load_video_meta, load_all_frames
-from src.io.json_writer import build_empty_artifact, write_clip_json, _to_serializable
-from src.cv.pose_estimator import (
-    PoseEstimator,
-    PoseResult,
-    extract_angles_from_pose,
-    KP,
-    KEYPOINT_NAMES,
-)
-from src.cv.bar_detector import BarDetector
-from src.cv.tracker import smooth_poses, smooth_bar_detections
-from src.cv.depth_estimator import DepthEstimator
-from src.signals.normalization import compute_scale, compute_midline_x
-from src.signals.smoothing import savgol_smooth
+from src.cv.pose_estimator import run_video as run_sam2_yolo_video
+from src.io.json_writer import build_empty_artifact, _to_serializable
+from src.io.video_loader import load_video_meta
+from src.reasoning.feedback_generator import VLMFeedbackGenerator
+from src.reasoning.rule_engine import load_rules, select_rules, format_coaching_feedback
 from src.signals.segmentation import segment_phases, phases_to_dicts
-from src.signals.trajectory_builder import build_all_trajectories
-from src.signals.feature_engineering import (
-    compute_bar_features,
-    compute_bilateral_features,
-    compute_trunk_features,
-    compute_hip_features,
-    compute_leg_features,
-)
+from src.signals.smoothing import lowpass_smooth, savgol_smooth
 from src.signals.wave_analysis import compute_wave_features
 from src.unsupervised.cluster_naming import assign_clip_fault_flags
-from src.reasoning.rule_engine import load_rules, select_rules, format_coaching_feedback
-from src.viz.annotated_video import write_annotated_video
-from src.viz.signal_plots import (
-    plot_trajectories,
-    plot_signal_dashboard,
-    plot_bilateral_symmetry,
-    plot_harmonic_wave_patterns,
-)
-from src.viz.report_generator import generate_text_report
-
-
-def _has_cuda() -> bool:
-    try:
-        import torch
-
-        return torch.cuda.is_available()
-    except ImportError:
-        return False
+from src.viz.signal_plots import plot_signal_dashboard, plot_harmonic_wave_patterns
 
 
 def _discover_videos(input_dir: str) -> list[str]:
-    """Recursively find all .mp4 files."""
-    patterns = ["**/*.mp4", "**/*.MP4", "**/*.avi", "**/*.mov"]
-    found = []
+    patterns = ["**/*.mp4", "**/*.MP4", "**/*.avi", "**/*.AVI", "**/*.mov", "**/*.MOV", "**/*.mkv", "**/*.MKV"]
+    found: list[str] = []
     for pat in patterns:
         found.extend(glob.glob(os.path.join(input_dir, pat), recursive=True))
     found = sorted(set(found))
@@ -92,331 +55,370 @@ def _discover_videos(input_dir: str) -> list[str]:
     return found
 
 
-def _save_depth_maps(depths: list[np.ndarray], out_dir: str) -> None:
-    os.makedirs(out_dir, exist_ok=True)
-    for i, depth in enumerate(depths):
-        np.save(os.path.join(out_dir, f"frame_{i:06d}.npy"), depth)
-        preview = cv2.applyColorMap(
-            (np.clip(depth, 0.0, 1.0) * 255).astype(np.uint8),
-            cv2.COLORMAP_INFERNO,
+def _mask_centroid_y(mask: np.ndarray) -> float:
+    ys, _ = np.where(mask.astype(bool))
+    if ys.size == 0:
+        return float("nan")
+    return float(np.mean(ys))
+
+
+def _mask_percentile_y(mask: np.ndarray, percentile: float) -> float:
+    ys, _ = np.where(mask.astype(bool))
+    if ys.size == 0:
+        return float("nan")
+    q = float(np.clip(percentile, 0.0, 100.0))
+    return float(np.percentile(ys, q))
+
+
+def _fill_nans_1d(arr: np.ndarray) -> np.ndarray:
+    out = arr.astype(np.float64).copy()
+    nans = np.isnan(out)
+    if not nans.any():
+        return out
+    if nans.all():
+        out[:] = 0.0
+        return out
+    idx = np.arange(len(out))
+    valid = ~nans
+    out[nans] = np.interp(idx[nans], idx[valid], out[valid])
+    return out
+
+
+def _rolling_median(signal: np.ndarray, window: int = 5) -> np.ndarray:
+    w = int(max(3, window))
+    if w % 2 == 0:
+        w += 1
+    pad = w // 2
+    padded = np.pad(signal, (pad, pad), mode="edge")
+    out = np.empty_like(signal, dtype=np.float64)
+    for i in range(len(signal)):
+        out[i] = float(np.median(padded[i : i + w]))
+    return out
+
+
+def _build_body_wave_signal(
+    masks_dir: str,
+    fps: float,
+    arm_percentile: float,
+    torso_percentile: float,
+    cutoff_hz: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    mask_paths = sorted(glob.glob(os.path.join(masks_dir, "frame_*.npy")))
+    if not mask_paths:
+        return (
+            np.array([], dtype=float),
+            np.array([], dtype=float),
+            np.array([], dtype=float),
         )
-        cv2.imwrite(os.path.join(out_dir, f"frame_{i:06d}.jpg"), preview)
+
+    # Arm proxy: higher mask region, torso proxy: central mask region.
+    arm_raw = np.array(
+        [_mask_percentile_y(np.load(p), percentile=arm_percentile) for p in mask_paths],
+        dtype=np.float64,
+    )
+    torso_raw = np.array(
+        [_mask_percentile_y(np.load(p), percentile=torso_percentile) for p in mask_paths],
+        dtype=np.float64,
+    )
+    arm_raw = _fill_nans_1d(arm_raw)
+    torso_raw = _fill_nans_1d(torso_raw)
+
+    arm_med = _rolling_median(arm_raw, window=5)
+    torso_med = _rolling_median(torso_raw, window=5)
+
+    # Weighted blend emphasizes arms while preserving torso stability cues.
+    raw = 0.65 * arm_med + 0.35 * torso_med
+
+    med = _rolling_median(raw, window=5)
+    low = lowpass_smooth(med, fps=fps, cutoff_hz=cutoff_hz)
+    filt = savgol_smooth(low, window=11, poly=3)
+    return arm_raw.astype(float), torso_raw.astype(float), filt.astype(float)
 
 
-def _save_keypoints_json(poses: list[PoseResult], out_path: str) -> None:
-    rows = []
-    for p in poses:
-        frame_kps = {}
-        for idx, name in enumerate(KEYPOINT_NAMES):
-            x, y = p.keypoints[idx]
-            frame_kps[name] = {
-                "x": None if np.isnan(x) else round(float(x), 4),
-                "y": None if np.isnan(y) else round(float(y), 4),
-                "confidence": round(float(p.confidences[idx]), 4),
-                "visible": bool(p.visible[idx]),
-            }
-        rows.append({"frame_idx": int(p.frame_idx), "keypoints": frame_kps})
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2)
+def _load_bar_y_from_masks(masks_dir: str) -> np.ndarray:
+    mask_paths = sorted(glob.glob(os.path.join(masks_dir, "frame_*.npy")))
+    if not mask_paths:
+        return np.array([], dtype=float)
+
+    y_vals = np.array([_mask_centroid_y(np.load(p)) for p in mask_paths], dtype=float)
+
+    # Fill NaN gaps by interpolation so phase segmentation remains stable.
+    if np.isnan(y_vals).any():
+        idx = np.arange(len(y_vals))
+        valid = ~np.isnan(y_vals)
+        if np.count_nonzero(valid) >= 2:
+            y_vals[~valid] = np.interp(idx[~valid], idx[valid], y_vals[valid])
+        elif np.count_nonzero(valid) == 1:
+            y_vals[:] = y_vals[valid][0]
+        else:
+            y_vals[:] = 0.0
+
+    return y_vals
 
 
-def process_single_video(
-    video_path: str,
-    output_root: str,
-    cfg: dict,
-    depth_est: DepthEstimator | None = None,
-) -> dict | None:
-    """Process one video into its own output folder."""
+def _write_report(path: str, video_name: str, wave_features: dict, phase_count: int) -> None:
+    quality = wave_features.get("quality", {})
+    lines = [
+        f"Video: {video_name}",
+        f"Grade: {quality.get('grade', '?')}",
+        f"Overall: {quality.get('overall', 0.0):.4f}",
+        f"Smoothness: {quality.get('smoothness', 0.0):.4f}",
+        f"Control: {quality.get('control', 0.0):.4f}",
+        f"Efficiency: {quality.get('efficiency', 0.0):.4f}",
+        f"Consistency: {quality.get('consistency', 0.0):.4f}",
+        f"Wave segments: {phase_count}",
+    ]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def _extract_rule_features(arm_y_raw: np.ndarray, torso_y_raw: np.ndarray, body_wave_y: np.ndarray) -> dict:
+    """Build threshold-compatible feature dict from mask-derived body signals."""
+    eps = 1e-8
+    if len(body_wave_y) == 0:
+        return {}
+
+    body_amp = float(np.ptp(body_wave_y)) + eps
+    torso_amp = float(np.ptp(torso_y_raw))
+    arm_torso_delta = np.asarray(arm_y_raw, dtype=float) - np.asarray(torso_y_raw, dtype=float)
+    arm_torso_drift = float(np.ptp(arm_torso_delta)) / body_amp
+
+    smooth = savgol_smooth(np.asarray(body_wave_y, dtype=float), window=11, poly=3)
+    residual = np.asarray(body_wave_y, dtype=float) - np.asarray(smooth, dtype=float)
+    lockout_osc = float(np.std(residual)) / body_amp
+
+    return {
+        # Not observable from mask-only body-wave extraction.
+        "wrist_height_diff_at_lockout_normalized": 0.0,
+        "bar_tilt_std_deg": 0.0,
+        "bar_lateral_drift_normalized": 0.0,
+        "lockout_delay_sec": 0.0,
+        # Proxies derived from torso movement signal.
+        "trunk_lateral_shift_normalized": float(torso_amp / body_amp),
+        "trunk_shift_peak_normalized": float(torso_amp / body_amp),
+        "hip_lateral_shift_normalized": float(0.7 * torso_amp / body_amp),
+        # Oscillation and depth-drift proxies.
+        "bar_lockout_oscillation": lockout_osc,
+        "bar_depth_drift_normalized": arm_torso_drift,
+    }
+
+
+def process_single_video(video_path: str, output_root: str, args: argparse.Namespace) -> dict | None:
     t0 = time.time()
     vid_name = Path(video_path).stem
     vid_dir = os.path.join(output_root, vid_name)
     os.makedirs(vid_dir, exist_ok=True)
 
-    # Check if already processed
-    json_path = os.path.join(vid_dir, "analysis.json")
-    if os.path.exists(json_path):
-        print(f"  [SKIP] {vid_name} — already processed")
+    analysis_path = os.path.join(vid_dir, "analysis.json")
+    if os.path.exists(analysis_path):
+        print(f"  [SKIP] {vid_name} - already processed")
         return None
 
     try:
-        # Stage 1: Load video
         meta = load_video_meta(video_path)
-        frames, _ = load_all_frames(
-            video_path,
-            max_height=cfg["pipeline"]["max_height"],
-            frame_step=cfg["pipeline"]["frame_step"],
-        )
-        if not frames:
-            print(f"  [WARN] {vid_name} — no frames loaded, skipping")
-            return None
 
-        artifact = build_empty_artifact(
-            meta.video_id, video_path, meta.fps, len(frames)
-        )
-
-        # Stage 2: Pose estimation
-        pose_cfg = cfg["pose"]
-        estimator = PoseEstimator(
-            backend=pose_cfg["backend"],
-            confidence_threshold=pose_cfg["confidence_threshold"],
-        )
-        poses_raw = estimator.process_video(frames)
-        estimator.close()
-
-        # Smooth poses
-        poses = smooth_poses(
-            poses_raw,
-            window=pose_cfg["smooth_window"],
-            poly=pose_cfg["smooth_poly"],
-            method=pose_cfg.get("smooth_method", "savgol"),
+        tracker_summary = run_sam2_yolo_video(
+            video_path=video_path,
+            checkpoint=args.checkpoint,
+            model_cfg=args.model_cfg,
+            yolo_model=args.yolo_model,
+            yolo_fallback_model=args.yolo_fallback_model,
+            output_dir=vid_dir,
+            prompt_x=None,
+            prompt_y=None,
+            yolo_every_n=args.yolo_every_n,
+            prompt_ema_alpha=args.prompt_ema_alpha,
         )
 
-        # Bar detection
-        bar_cfg = cfg["bar"]
-        bar_detector = BarDetector(
-            backend=bar_cfg["backend"],
-            wrist_span_scale=bar_cfg["wrist_span_scale"],
-            min_confidence=bar_cfg["min_confidence"],
+        arm_y_raw, torso_y_raw, body_wave_y = _build_body_wave_signal(
+            masks_dir=os.path.join(vid_dir, "masks"),
+            fps=meta.fps,
+            arm_percentile=args.arm_y_percentile,
+            torso_percentile=args.torso_y_percentile,
+            cutoff_hz=args.signal_cutoff_hz,
         )
-        bars = smooth_bar_detections(
-            bar_detector.detect_sequence(frames, poses_raw),
-            window=pose_cfg["smooth_window"],
-            poly=pose_cfg["smooth_poly"],
-        )
+        if len(body_wave_y) == 0:
+            raise RuntimeError("No masks were produced by SAM2 tracker")
 
-        # Save keypoints
-        _save_keypoints_json(poses, os.path.join(vid_dir, "keypoints.json"))
+        phases = segment_phases(body_wave_y, meta.fps)
+        wave_features = compute_wave_features(body_wave_y, meta.fps, phases, scale=1.0)
 
-        # Stage 3: Depth estimation
-        depths = []
-        depth_feats = {"depth_enabled": False}
-        depth_map_dir = os.path.join(vid_dir, "depth_maps")
-        if False and depth_est is not None:
-            depths = depth_est.process_video(frames, video_id=vid_name)
-            _save_depth_maps(depths, depth_map_dir)
-            df_raw = depth_est.extract_depth_features(depths, poses, bars)
-            depth_feats = {
-                "depth_enabled": True,
-                "bar_forward_drift_depth": df_raw.get("bar_forward_drift_depth", 0.0),
-                "bar_depth_asymmetry": df_raw.get("bar_depth_asymmetry", 0.0),
-                "torso_depth_shift": df_raw.get("torso_depth_shift", 0.0),
-                "subject_depth_stability": df_raw.get("subject_depth_stability", 0.0),
-            }
-        artifact["depth_features"] = depth_feats
-
-        # Stage 4: Trajectories
-        scale = compute_scale(poses)
-        midline_x = compute_midline_x(poses)
-        resample_len = cfg["pipeline"]["max_frames"]
-        traj_dict = build_all_trajectories(
-            poses,
-            bars,
-            resample_len=resample_len,
-            smooth_window=cfg["signals"]["smooth_window"],
-        )
-        artifact["trajectories"] = {
-            k: v for k, v in traj_dict.items() if not k.startswith("_")
-        }
-
-        # Raw signals
-        bar_cx = np.array([b.center_x for b in bars])
-        bar_cy = np.array([b.center_y for b in bars])
-        bar_tilt = np.array([b.tilt_deg for b in bars])
-        angle_seq = [extract_angles_from_pose(p) for p in poses]
-        left_elbow_deg = np.array(
-            [a.get("left_elbow_angle_deg", np.nan) for a in angle_seq]
-        )
-        right_elbow_deg = np.array(
-            [a.get("right_elbow_angle_deg", np.nan) for a in angle_seq]
-        )
-        shoulder_tilt = np.array(
-            [a.get("shoulder_line_tilt_deg", np.nan) for a in angle_seq]
-        )
-        hip_tilt_arr = np.array([a.get("hip_line_tilt_deg", np.nan) for a in angle_seq])
-
-        def kp_y(name):
-            return np.array([p.keypoints[KP[name], 1] for p in poses])
-
-        def kp_x(name):
-            return np.array([p.keypoints[KP[name], 0] for p in poses])
-
-        ls_x, rs_x = kp_x("left_shoulder"), kp_x("right_shoulder")
-        lh_x, rh_x = kp_x("left_hip"), kp_x("right_hip")
-        trunk_cx_arr = np.nanmean(
-            np.stack([(ls_x + rs_x) / 2.0, (lh_x + rh_x) / 2.0]), axis=0
-        )
-        hip_cx_arr = (lh_x + rh_x) / 2.0
-        lk_deg = np.array([a.get("left_knee_angle_deg", np.nan) for a in angle_seq])
-        rk_deg = np.array([a.get("right_knee_angle_deg", np.nan) for a in angle_seq])
-
-        # Stage 5: Segmentation
-        bar_cy_smooth = savgol_smooth(bar_cy, cfg["signals"]["smooth_window"])
-        phases = segment_phases(bar_cy_smooth, meta.fps)
+        artifact = build_empty_artifact(meta.video_id, video_path, meta.fps, len(body_wave_y))
+        artifact["video"] = os.path.basename(video_path)
         artifact["phase_segments"] = phases_to_dicts(phases)
-        phase_per_frame = ["unknown"] * len(frames)
-        for ph in phases:
-            for fi in range(ph.start_frame, min(ph.end_frame + 1, len(frames))):
-                phase_per_frame[fi] = ph.phase_type
-
-        # Stage 6: Features + wave analysis
-        bar_feats = compute_bar_features(
-            bar_cx, bar_cy, bar_tilt, meta.fps, scale, midline_x
-        )
-        bilateral_feats = compute_bilateral_features(
-            kp_y("left_wrist"),
-            kp_y("right_wrist"),
-            left_elbow_deg,
-            right_elbow_deg,
-            meta.fps,
-            scale,
-        )
-        trunk_feats = compute_trunk_features(
-            shoulder_tilt, hip_tilt_arr, trunk_cx_arr, scale
-        )
-        hip_feats = compute_hip_features(hip_cx_arr, scale)
-        leg_feats = compute_leg_features(lk_deg, rk_deg)
-        all_features = {
-            **bar_feats,
-            **bilateral_feats,
-            **trunk_feats,
-            **hip_feats,
-            **leg_feats,
+        artifact["wave_features"] = wave_features
+        artifact["raw_signals"]["bar_center_y"] = [float(x) for x in body_wave_y.tolist()]
+        artifact["raw_signals"]["bar_center_x"] = [0.0 for _ in range(len(body_wave_y))]
+        artifact["raw_signals"]["bar_center_z_proxy"] = [
+            float(x) for x in arm_y_raw.tolist()
+        ]
+        artifact["raw_signals"]["left_wrist_y"] = [float(x) for x in arm_y_raw.tolist()]
+        artifact["raw_signals"]["right_wrist_y"] = [float(x) for x in arm_y_raw.tolist()]
+        artifact["raw_signals"]["trunk_center_x"] = [float(x) for x in torso_y_raw.tolist()]
+        artifact["signal_source"] = "sam2_mask_arm_torso_wave_filtered"
+        artifact["tracker_summary"] = tracker_summary
+        artifact["signal_processing"] = {
+            "arm_y_percentile": float(args.arm_y_percentile),
+            "torso_y_percentile": float(args.torso_y_percentile),
+            "blend_weights": {"arm": 0.65, "torso": 0.35},
+            "median_window": 5,
+            "lowpass_cutoff_hz": float(args.signal_cutoff_hz),
+            "savgol_window": 11,
+            "savgol_poly": 3,
         }
 
-        wave_feats = compute_wave_features(bar_cy_smooth, meta.fps, phases, scale)
-        wave_feats["quality"]["symmetry"] = bilateral_feats.get("symmetry_score", 0.0)
-        artifact["wave_features"] = wave_feats
-
-        # Fault flags
-        thresholds_path = os.path.join(PIPELINE_ROOT, "configs", "thresholds.yaml")
-        with open(thresholds_path) as f:
+        # ── Reasoning: fault flags + rule engine + feedback generator ──
+        with open(args.thresholds_path, "r", encoding="utf-8") as f:
             thresholds_cfg = yaml.safe_load(f)
-        fault_flags = assign_clip_fault_flags(all_features, thresholds_cfg)
+        features_for_rules = _extract_rule_features(arm_y_raw, torso_y_raw, body_wave_y)
+        artifact["derived_rule_features"] = {k: float(v) for k, v in features_for_rules.items()}
+        fault_flags = assign_clip_fault_flags(features_for_rules, thresholds_cfg)
         artifact["fault_flags"] = fault_flags
 
-        # Stage 7: Rule-based feedback
-        rules_path = os.path.join(PIPELINE_ROOT, "configs", "rules_ohp.yaml")
-        rules = load_rules(rules_path)
+        rules = load_rules(args.rules_path)
         triggered = select_rules(fault_flags, rules)
         rule_feedback = format_coaching_feedback(
-            triggered,
-            "unknown",
-            wave_feats["quality"],
-            rules,
-            uncertainty=depth_feats.get("depth_enabled", False),
+            triggered_rules=triggered,
+            cluster_name=artifact.get("unsupervised", {}).get("consensus_cluster_name", "unknown"),
+            wave_quality=wave_features.get("quality", {}),
+            rules=rules,
+            uncertainty=False,
         )
-        artifact["language"] = rule_feedback
+        vlm_cfg = {
+            "enabled": bool(args.vlm_enabled),
+            "model_id": args.vlm_model_id,
+            "max_new_tokens": int(args.vlm_max_new_tokens),
+            "temperature": float(args.vlm_temperature),
+            "device": args.vlm_device,
+            "lora_path": args.vlm_lora_path,
+        }
+        vlm_gen = VLMFeedbackGenerator(vlm_cfg)
+        artifact["language"] = vlm_gen.generate(
+            artifact,
+            key_frames=None,
+            rule_based_fallback=rule_feedback,
+        )
 
-        # Stage 8: Save outputs
-        # JSON
-        with open(json_path, "w", encoding="utf-8") as f:
+        with open(analysis_path, "w", encoding="utf-8") as f:
             json.dump(_to_serializable(artifact), f, indent=2)
 
-        # Annotated video
-        annotated_path = os.path.join(vid_dir, "annotated_video.mp4")
-        write_annotated_video(
-            frames,
-            poses,
-            bars,
-            fault_flags,
-            phase_per_frame,
-            annotated_path,
-            meta.fps,
-        )
-
-        # Plots
         plots_dir = os.path.join(vid_dir, "plots")
         os.makedirs(plots_dir, exist_ok=True)
-        try:
-            plot_trajectories(
-                artifact["trajectories"],
-                artifact["phase_segments"],
-                os.path.join(plots_dir, "trajectories.png"),
-                meta.fps,
-            )
-            plot_signal_dashboard(
-                bar_cy_smooth,
-                meta.fps,
-                artifact["phase_segments"],
-                os.path.join(plots_dir, "dashboard.png"),
-            )
-            plot_bilateral_symmetry(
-                kp_y("left_wrist"),
-                kp_y("right_wrist"),
-                left_elbow_deg,
-                right_elbow_deg,
-                os.path.join(plots_dir, "bilateral.png"),
-            )
-            plot_harmonic_wave_patterns(
-                bar_cy,
-                meta.fps,
-                wave_feats,
-                os.path.join(plots_dir, "harmonic_wave.png"),
-            )
-        except Exception:
-            pass  # plots are non-critical
+        phase_dicts = phases_to_dicts(phases)
+        plot_signal_dashboard(
+            body_wave_y,
+            meta.fps,
+            phase_dicts,
+            os.path.join(plots_dir, "dashboard.png"),
+        )
+        plot_harmonic_wave_patterns(
+            body_wave_y,
+            meta.fps,
+            wave_features,
+            os.path.join(plots_dir, "harmonic_wave.png"),
+        )
 
-        # Report
-        generate_text_report(artifact, os.path.join(vid_dir, "report.txt"))
+        _write_report(
+            os.path.join(vid_dir, "report.txt"),
+            vid_name,
+            wave_features,
+            len(phase_dicts),
+        )
 
         elapsed = time.time() - t0
-        grade = wave_feats["quality"].get("grade", "?")
-        active_faults = [k for k, v in fault_flags.items() if v]
-        print(
-            f"  [OK] {vid_name} — {elapsed:.1f}s — Grade: {grade} — Faults: {active_faults}"
-        )
+        grade = wave_features.get("quality", {}).get("grade", "?")
+        print(f"  [OK] {vid_name} - {elapsed:.1f}s - Grade: {grade}")
         return artifact
 
     except Exception as e:
         elapsed = time.time() - t0
-        print(f"  [ERR] {vid_name} — {elapsed:.1f}s — {e}")
+        print(f"  [ERR] {vid_name} - {elapsed:.1f}s - {e}")
         traceback.print_exc()
-        # Write error log
-        with open(os.path.join(vid_dir, "error.txt"), "w") as f:
+        with open(os.path.join(vid_dir, "error.txt"), "w", encoding="utf-8") as f:
             f.write(f"{e}\n\n{traceback.format_exc()}")
         return None
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Batch-process OHP videos.")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Batch-process OHP videos using SAM2+YOLO only.")
     parser.add_argument(
         "--input_dir",
-        default=r"C:\Users\josep\Desktop\Capstone_new\videos\First 500 Vids",
+        default="/scratch/jnolas77/fitness/capstone/First 500 Vids",
     )
     parser.add_argument(
         "--output_dir",
         default=os.path.join(PIPELINE_ROOT, "batch_outputs"),
     )
-    parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument(
-        "--workers", type=int, default=1, help="(reserved for future multiprocessing)"
+        "--checkpoint",
+        default="/scratch/jnolas77/fitness/capstone/ml/models/sam2.1_hiera_large.pt",
+    )
+    parser.add_argument("--model_cfg", default="configs/sam2.1/sam2.1_hiera_l.yaml")
+    parser.add_argument(
+        "--yolo_model",
+        default="/scratch/jnolas77/fitness/capstone/ml/models/yolo26x-pose.pt",
     )
     parser.add_argument(
-        "--max_videos", type=int, default=0, help="Limit videos (0=all)"
+        "--yolo_fallback_model",
+        default="/scratch/jnolas77/Question_Generator_Model/Question_Generator_Model/yolov8n.pt",
     )
+    parser.add_argument("--yolo_every_n", type=int, default=2)
+    parser.add_argument("--prompt_ema_alpha", type=float, default=0.45)
+    parser.add_argument(
+        "--arm_y_percentile",
+        type=float,
+        default=18.0,
+        help="Mask y-percentile for arm-dominant motion proxy",
+    )
+    parser.add_argument(
+        "--torso_y_percentile",
+        type=float,
+        default=55.0,
+        help="Mask y-percentile for torso motion proxy",
+    )
+    parser.add_argument(
+        "--signal_cutoff_hz",
+        type=float,
+        default=2.0,
+        help="Low-pass cutoff for grading signal",
+    )
+    parser.add_argument(
+        "--thresholds_path",
+        default=os.path.join(PIPELINE_ROOT, "configs", "thresholds.yaml"),
+        help="Path to fault-threshold YAML",
+    )
+    parser.add_argument(
+        "--rules_path",
+        default=os.path.join(PIPELINE_ROOT, "configs", "rules_ohp.yaml"),
+        help="Path to coaching rules YAML",
+    )
+    parser.add_argument("--vlm_enabled", action="store_true", help="Enable VLM feedback generation")
+    parser.add_argument("--vlm_model_id", default="Qwen/Qwen3-VL-2B-Thinking")
+    parser.add_argument("--vlm_device", default="cpu")
+    parser.add_argument("--vlm_lora_path", default="")
+    parser.add_argument("--vlm_max_new_tokens", type=int, default=512)
+    parser.add_argument("--vlm_temperature", type=float, default=0.3)
+    parser.add_argument("--max_videos", type=int, default=0, help="Limit videos (0=all)")
     args = parser.parse_args()
 
-    cfg = yaml.safe_load(open(args.config))
     os.makedirs(args.output_dir, exist_ok=True)
 
     videos = _discover_videos(args.input_dir)
     if args.max_videos > 0:
         videos = videos[: args.max_videos]
 
-    # Depth estimation removed.
-    depth_est = None
-
     summary = {"total": len(videos), "success": 0, "failed": 0, "skipped": 0}
     t_start = time.time()
 
     for i, vpath in enumerate(videos):
         print(f"\n[{i+1}/{len(videos)}] Processing {os.path.basename(vpath)} ...")
-        result = process_single_video(vpath, args.output_dir, cfg, depth_est)
+        result = process_single_video(vpath, args.output_dir, args)
+        vid_name = Path(vpath).stem
+
         if result is None:
-            # Distinguish skip vs error
-            vid_name = Path(vpath).stem
             err_file = os.path.join(args.output_dir, vid_name, "error.txt")
-            if os.path.exists(os.path.join(args.output_dir, vid_name, "analysis.json")):
+            analysis = os.path.join(args.output_dir, vid_name, "analysis.json")
+            if os.path.exists(analysis):
                 summary["skipped"] += 1
             elif os.path.exists(err_file):
                 summary["failed"] += 1
@@ -427,13 +429,14 @@ def main():
 
     elapsed = time.time() - t_start
     summary["elapsed_sec"] = round(elapsed, 1)
-    print(f"\n{'='*60}")
+
+    print("\n" + "=" * 60)
     print(
         f"Batch complete: {summary['success']} OK / {summary['failed']} failed / {summary['skipped']} skipped"
     )
     print(f"Total time: {elapsed:.0f}s ({elapsed/60:.1f} min)")
 
-    with open(os.path.join(args.output_dir, "batch_summary.json"), "w") as f:
+    with open(os.path.join(args.output_dir, "batch_summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
 

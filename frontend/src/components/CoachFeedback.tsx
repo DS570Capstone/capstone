@@ -1,11 +1,31 @@
 import { MessageCircle, ExternalLink } from 'lucide-react'
 import type { Language } from '../api/client'
 
+function toText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    if (typeof obj.coach_feedback === 'string') return obj.coach_feedback
+    if (typeof obj.summary === 'string') return obj.summary
+    if (typeof obj.reasoning_trace_short === 'string') return obj.reasoning_trace_short
+    try {
+      return JSON.stringify(obj)
+    } catch {
+      return ''
+    }
+  }
+  return ''
+}
+
 export default function CoachFeedback({ language, wandbUrl, cluster }: {
   language: Language
   wandbUrl?: string
   cluster: string
 }) {
+  const summaryText = toText((language as unknown as Record<string, unknown>)?.summary)
+  const coachText = toText((language as unknown as Record<string, unknown>)?.coach_feedback)
+  const reasoningText = toText((language as unknown as Record<string, unknown>)?.reasoning_trace_short)
+
   return (
     <div className="bg-[#171717] rounded-2xl p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -16,18 +36,18 @@ export default function CoachFeedback({ language, wandbUrl, cluster }: {
         <span className="text-xs text-zinc-600 bg-zinc-800 px-2 py-1 rounded-lg font-mono">{cluster}</span>
       </div>
 
-      {language.summary && (
-        <p className="text-zinc-300 text-sm leading-relaxed">{language.summary}</p>
+      {summaryText && (
+        <p className="text-zinc-300 text-sm leading-relaxed">{summaryText}</p>
       )}
 
-      {language.coach_feedback && (
+      {coachText && (
         <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl p-4">
-          <p className="text-indigo-200 text-sm leading-relaxed">{language.coach_feedback}</p>
+          <p className="text-indigo-200 text-sm leading-relaxed">{coachText}</p>
         </div>
       )}
 
-      {language.reasoning_trace_short && (
-        <p className="text-zinc-600 text-xs leading-relaxed italic">{language.reasoning_trace_short}</p>
+      {reasoningText && (
+        <p className="text-zinc-600 text-xs leading-relaxed italic">{reasoningText}</p>
       )}
 
       {wandbUrl && (

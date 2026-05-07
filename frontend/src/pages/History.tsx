@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Triangle, ArrowLeft, Loader, AlertCircle, ChevronRight, CheckCircle, Clock, XCircle } from 'lucide-react'
-import { getHistory, HistoryItem } from '../api/client'
+import { Triangle, ArrowLeft, Loader, AlertCircle, ChevronRight, CheckCircle, Clock, XCircle, BookOpen } from 'lucide-react'
+import { getHistory, getHistorySummary, HistoryItem, HistorySummary } from '../api/client'
 
 const GRADE_COLOR: Record<string, string> = {
   A: 'text-emerald-400 bg-emerald-400/10 border-emerald-400/30',
@@ -26,15 +26,43 @@ function formatDate(iso: string) {
 export default function History() {
   const navigate = useNavigate()
   const [items, setItems] = useState<HistoryItem[]>([])
+  const [summary, setSummary] = useState<HistorySummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    getHistory()
-      .then(setItems)
+    Promise.all([getHistory(), getHistorySummary()])
+      .then(([historyItems, historySummary]) => {
+        setItems(historyItems)
+        setSummary(historySummary)
+      })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
   }, [])
+
+  const sortedItems = (() => {
+    // Group by display name (filename without extension), then:
+    // 1) sort each group's runs newest -> oldest
+    // 2) sort groups by latest run timestamp (newest group first)
+    const keyOf = (item: HistoryItem) =>
+      item.filename ? item.filename.replace(/\.[^.]+$/, '') : item.video_id.slice(0, 8)
+
+    const groups = new Map<string, HistoryItem[]>()
+    for (const item of items) {
+      const k = keyOf(item)
+      const arr = groups.get(k) ?? []
+      arr.push(item)
+      groups.set(k, arr)
+    }
+
+    const groupEntries = Array.from(groups.entries()).map(([k, arr]) => {
+      arr.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      return { key: k, runs: arr, latestTs: new Date(arr[0].created_at).getTime() }
+    })
+
+    groupEntries.sort((a, b) => b.latestTs - a.latestTs)
+    return groupEntries.flatMap(g => g.runs)
+  })()
 
   return (
     <div className="min-h-screen bg-[#09090b] flex flex-col">
@@ -48,6 +76,13 @@ export default function History() {
         </div>
         <span className="text-white font-bold">LiftLens</span>
         <span className="text-zinc-700 text-sm ml-1">/ History</span>
+        <button
+          onClick={() => navigate('/guide')}
+          className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors"
+        >
+          <BookOpen size={14} />
+          Guide
+        </button>
       </nav>
 
       <div className="flex-1 max-w-4xl mx-auto w-full px-4 py-8">
@@ -57,6 +92,36 @@ export default function History() {
             <p className="text-zinc-500 text-sm mt-0.5">{items.length} videos analysed</p>
           </div>
         </div>
+
+        {!loading && !error && summary && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+            <div className="bg-[#171717] rounded-xl border border-zinc-800/60 p-3">
+              <p className="text-zinc-500 text-xs uppercase tracking-wider">Processed</p>
+              <p className="text-white text-xl font-bold mt-1">{summary.processed_videos}</p>
+            </div>
+            <div className="bg-[#171717] rounded-xl border border-zinc-800/60 p-3">
+              <p className="text-zinc-500 text-xs uppercase tracking-wider">Reprocessed Runs</p>
+              <p className="text-white text-xl font-bold mt-1">{summary.reprocessed_runs}</p>
+            </div>
+            <div className="bg-[#171717] rounded-xl border border-zinc-800/60 p-3 md:col-span-2">
+              <p className="text-zinc-500 text-xs uppercase tracking-wider">Grade Counts</p>
+              <p className="text-zinc-300 text-sm mt-1">
+                {Object.entries(summary.grade_counts)
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([grade, count]) => `${grade}: ${count}`)
+                  .join(' · ') || 'No completed grades yet'}
+              </p>
+            </div>
+            <div className="bg-[#171717] rounded-xl border border-zinc-800/60 p-3 md:col-span-2 lg:col-span-4">
+              <p className="text-zinc-500 text-xs uppercase tracking-wider">Fault Details</p>
+              <p className="text-zinc-300 text-sm mt-1">
+                {summary.fault_counts.length > 0
+                  ? summary.fault_counts.slice(0, 12).map(f => `${f.fault}: ${f.count}`).join(' · ')
+                  : 'No faults detected in completed analyses'}
+              </p>
+            </div>
+          </div>
+        )}
 
         {loading && (
           <div className="flex justify-center py-24">
@@ -84,9 +149,9 @@ export default function History() {
           </div>
         )}
 
-        {!loading && items.length > 0 && (
+        {!loading && sortedItems.length > 0 && (
           <div className="flex flex-col gap-2">
-            {items.map(item => (
+            {sortedItems.map(item => (
               <button
                 key={item.video_id}
                 onClick={() => item.status === 'done' && navigate(`/dashboard/${item.video_id}`)}
@@ -119,6 +184,16 @@ export default function History() {
                       <> · <span className="text-red-400 truncate">{item.error.slice(0, 60)}</span></>
                     )}
                   </p>
+                  {item.signal_processing && (
+                    <p className="text-zinc-600 text-[11px] mt-1">
+                      {item.signal_processing.backend ?? 'n/a'}
+                      {item.signal_processing.max_height != null && <> · h{item.signal_processing.max_height}</>}
+                      {item.signal_processing.max_frames != null && <> · f{item.signal_processing.max_frames}</>}
+                      {item.signal_processing.resample_length != null && <> · r{item.signal_processing.resample_length}</>}
+                      {item.signal_processing.frame_step != null && <> · step{item.signal_processing.frame_step}</>}
+                      {item.signal_processing.yolo_frame_step != null && <> · yStep{item.signal_processing.yolo_frame_step}</>}
+                    </p>
+                  )}
                 </div>
 
                 {/* Grade */}

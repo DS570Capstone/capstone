@@ -42,33 +42,62 @@ def compute_wave_features(
     jerk = derivs["jerk"]
     acc = derivs["acceleration"]
 
+    # Focus scoring on active lifting motion; long setup/rest periods can
+    # artificially depress efficiency and smoothness.
+    active_mask = np.zeros(len(bar_cy), dtype=bool)
+    active_phase_types = {"concentric", "eccentric", "lockout"}
+    for ph in phases:
+        if ph.phase_type in active_phase_types:
+            s = max(int(ph.start_frame), 0)
+            e = min(int(ph.end_frame), len(bar_cy) - 1)
+            if e >= s:
+                active_mask[s : e + 1] = True
+    if not np.any(active_mask):
+        active_mask[:] = True
+
+    vel_active = vel[active_mask]
+    acc_active = acc[active_mask]
+    jerk_active = jerk[active_mask]
+
     # Energy
-    up = vel[vel < 0]
-    down = vel[vel > 0]
+    up = vel_active[vel_active < 0]
+    down = vel_active[vel_active > 0]
     work_pos = float(np.sum(up ** 2)) * 0.5
     work_neg = float(np.sum(down ** 2)) * 0.5
     eff_pct = work_pos / (work_pos + work_neg + 1e-8) * 100.0
-    peak_power = float(np.nanmax(np.abs(vel) ** 2))
+    peak_power = float(np.nanmax(np.abs(vel_active) ** 2))
 
     # Damping proxy
-    damping_ratio = min(1.0, float(np.std(acc) / (np.std(vel) + 1e-8)))
+    damping_ratio = min(1.0, float(np.std(acc_active) / (np.std(vel_active) + 1e-8)))
 
     # Spectral
     spec = spectral_features(bar_cy[~np.isnan(bar_cy)], fps)
 
     # Smoothness / oscillations
-    smooth = smoothness_score(jerk, vel)
+    smooth = smoothness_score(jerk_active, vel_active)
     osc = count_oscillations(bar_cy[~np.isnan(bar_cy)])
     is_harmonic = osc >= 2
 
     # Quality
-    control = float(np.clip(1.0 - np.nanstd(acc) / (np.nanmax(np.abs(acc)) + 1e-8), 0.0, 1.0))
-    consistency = float(np.clip(1.0 - np.nanstd(vel) / (np.nanmax(np.abs(vel)) + 1e-8), 0.0, 1.0))
+    control = float(
+        np.clip(
+            1.0 - np.nanstd(acc_active) / (np.nanmax(np.abs(acc_active)) + 1e-8),
+            0.0,
+            1.0,
+        )
+    )
+    consistency = float(
+        np.clip(
+            1.0 - np.nanstd(vel_active) / (np.nanmax(np.abs(vel_active)) + 1e-8),
+            0.0,
+            1.0,
+        )
+    )
     efficiency = round(eff_pct / 100.0, 4)
     overall = round(float(np.mean([smooth, control, efficiency, consistency])), 4)
 
     # Grade
-    if overall >= 0.85:
+    if overall >= 0.80:
         grade = "A"
     elif overall >= 0.70:
         grade = "B"

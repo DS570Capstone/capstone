@@ -1,24 +1,57 @@
+tracker:
+  backend: yolo_keypoints
+  yolo_model: /app/ml_models/yolov8n-pose.pt
+  yolo_every_n: 1
+  yolo_frame_step: 1
+  signal_cutoff_hz: 1.0
+  sam2_checkpoint: /app/ml_models/sam2.1_hiera_large.pt
+  sam2_model_cfg: configs/sam2.1/sam2.1_hiera_l.yaml
+  sam2_frame_step: 3
+  prompt_ema_alpha: 0.45
+  arm_y_percentile: 18.0
+  torso_y_percentile: 55.0
 pipeline:
-  exercise: "ohp"
-  camera_position: "BACK"
-  max_height: 480 # reduced from 720 — cuts per-frame RAM ~55%, faster pose estimation
-  max_frames: 64 # reduced from 128 — halves trajectory resampling cost; sufficient for rep analysis
-  frame_step: 1 # process every 2nd frame — halves pose estimation time on CPU
-  cache_dir: "data/cache"
-  output_dir: "outputs"
-
+  exercise: ohp
+  camera_position: BACK
+  max_height: 720
+  max_frames: 128
+  frame_step: 1
+  cache_dir: data/cache
+  output_dir: outputs
+pose:
+  backend: mediapipe
+  confidence_threshold: 0.5
+  smooth_window: 11
+  smooth_poly: 3
+  smooth_method: savgol
+  one_euro_min_cutoff: 1.0
+  one_euro_beta: 0.02
+  one_euro_d_cutoff: 1.0
+  one_euro_min_visibility: 0.5
+  one_euro_max_jump_px: 60.0
+  one_euro_max_interp_gap: 8
+bar:
+  backend: wrist_heuristic
+  yolo_weights: models/bar_detector.pt
+  wrist_span_scale: 0.5
+  min_confidence: 0.3
+depth:
+  enabled: false
+  backend: depth_anything_v2
+  model_size: small
+  model_id: depth-anything/Depth-Anything-V2-Small-hf
+  cache_depth: true
+  colorize_previews: true
 signals:
-  resample_length: 64 # match max_frames — was 128 (upsampling sparse data adds noise)
+  resample_length: 128
   smooth_window: 7
   smooth_poly: 3
   normalize: true
-
 jitter_filter:
   max_jump_ratio: 0.32
   min_valid_keypoints: 8
   min_joint_jump_px: 6.0
   max_interp_gap: 4
-
 tracking_filter:
   confidence_threshold: 0.5
   jump_ratio_threshold: 0.25
@@ -28,57 +61,53 @@ tracking_filter:
   bar_confidence_threshold: 0.2
   bar_jump_ratio_threshold: 0.25
   bar_min_jump_px: 6.0
-
 clustering:
-  n_jobs: 2 # was -1 — limits CPU cores to prevent thermal throttle on laptop
+  n_jobs: 2
   random_state: 42
   feature_clustering:
-    method: "hdbscan" # "hdbscan" | "kmeans" | "gmm" | "agglomerative"
+    method: hdbscan
     min_cluster_size: 3
     min_samples: 2
     kmeans_k: 8
   latent_clustering:
-    method: "hdbscan"
+    method: hdbscan
     min_cluster_size: 3
     min_samples: 2
   anomaly:
-    method: "isolation_forest"
+    method: isolation_forest
     contamination: 0.1
   umap:
     n_neighbors: 15
     min_dist: 0.1
     n_components: 2
-
 embedding:
-  model: "tcn" # "tcn" | "transformer" | "gru"
-  input_channels: 4 # arm, legs, core, bar
+  model: tcn
+  input_channels: 4
   d_model: 64
   n_layers: 4
   kernel_size: 3
   dropout: 0.1
   latent_dim: 32
-
 vlm:
-  enabled: false # CPU: keep false. Requires GPU + peft package + downloaded Qwen3-VL model.
-  model_id: "Qwen/Qwen3-VL-2B-Thinking"
+  enabled: true
+  model_id: Qwen/Qwen3-VL-2B-Thinking
   max_new_tokens: 512
   temperature: 0.3
-  device: "cpu" # was "cuda" — safe default for CPU-only laptop
+  device: cpu
   num_key_frames: 4
-  adapter_path: "checkpoints/vision_adapter.pt"
-  lora_path: "checkpoints/language_lora"
-
+  adapter_path: checkpoints/vision_adapter_new.pt
+  lora_path: checkpoints/language_lora
 vp3d:
-  enabled: true # Set true once model is downloaded (see below)
-  # Download the pre-trained model:
-  #   mkdir -p models
-  #   curl -L -o models/pretrained_h36m_detectron_coco.bin \
-  #     https://dl.fbaipublicfiles.com/video-pose-3d/pretrained_h36m_detectron_coco.bin
-  model_path: "models/pretrained_h36m_detectron_coco.bin"
-  filter_widths: [3, 3, 3, 3, 3] # receptive field = 243 frames
+  enabled: true
+  model_path: models/pretrained_h36m_detectron_coco.bin
+  filter_widths:
+  - 3
+  - 3
+  - 3
+  - 3
+  - 3
   channels: 1024
   dropout: 0.25
-
 viz:
   save_annotated_video: true
   save_plots: true
@@ -86,6 +115,15 @@ viz:
   save_depth_previews: true
   overlay_max_hold: 3
   fps_output: 30
-  skeleton_color: [0, 255, 0]
-  bar_color: [0, 0, 255]
-  fault_color: [0, 0, 255]
+  skeleton_color:
+  - 0
+  - 255
+  - 0
+  bar_color:
+  - 0
+  - 0
+  - 255
+  fault_color:
+  - 0
+  - 0
+  - 255
